@@ -1,0 +1,313 @@
+# =============================================================================
+# FilterTool Configuration
+# =============================================================================
+# Copy this file and modify for your research project.
+# Run: filtertool run --config config.yaml
+
+protocol_version: "offensive-security-mapping-v1"
+
+# --- Search ---
+search:
+  # Which APIs to query
+  # Academic metadata sources; arXiv includes preprints, which are not necessarily peer reviewed.
+  sources:
+    - semantic_scholar
+    - openalex
+    - crossref
+    - arxiv
+
+  # Search queries — each query is sent to all enabled sources
+  queries:
+    - "LLM penetration testing"
+    - "large language model automated penetration testing"
+    - "LLM agent vulnerability exploitation"
+    - "LLM exploit generation"
+    - "LLM capture the flag"
+    - "autonomous hacking agent language model"
+    - "LLM offensive security agent"
+    - "LLM red team cyber attack automation"
+    - "GPT privilege escalation"
+    - "multi-agent LLM penetration testing"
+
+  # Maximum results per query per source; adapters cap individual requests at 100.
+  max_results_per_query: 100
+
+  # Year range (inclusive)
+  year_from: 2022
+  year_to: 2026
+
+  # API settings
+  api:
+    retry_attempts: 3             # Retry hợp lý, đủ để bù 429 nhưng không spam
+    retry_delay_seconds: 5        # Đợi 5 giây nếu lỗi tạm thời
+    rate_limit_delay_seconds: 6.0 # Giãn cách 6s để tránh vượt quota API
+    timeout_seconds: 45
+    # Optional: Semantic Scholar API key for higher rate limits
+    semantic_scholar_api_key: null
+    # Email để Crossref/OpenAlex đưa vào luồng ưu tiên (Polite Pool)
+    # Optional contact email for polite API pools
+    contact_email: null
+
+# --- Deduplication ---
+dedup:
+  # DOI exact match after normalization
+  doi_match: true
+  # Fuzzy title matching
+  title_fuzzy:
+    enabled: true
+    threshold: 90  # 0-100, rapidfuzz score
+  # Also compare year + first author as tiebreaker
+  cross_validate: true
+
+# --- Rule-based Filter ---
+rule_filter:
+  # Paper must contain at least `min_keyword_hits` inclusion keywords
+  # in title + abstract combined
+  min_keyword_hits: 2
+
+  # At least one term from each group is required; unmatched papers remain for human review.
+  llm_terms:
+    - "large language model"
+    - "LLM"
+    - "GPT"
+    - "ChatGPT"
+    - "language model"
+    - "AI agent"
+    - "agentic"
+  offensive_terms:
+    - "penetration test"
+    - "pentest"
+    - "offensive security"
+    - "red team"
+    - "exploit"
+    - "vulnerability exploitation"
+    - "capture the flag"
+    - "CTF"
+    - "privilege escalation"
+    - "lateral movement"
+    - "cyber attack"
+    - "hacking"
+    - "attack automation"
+  # Compatibility union for older tooling.
+  inclusion_keywords:
+    - "large language model"
+    - "LLM"
+    - "GPT"
+    - "ChatGPT"
+    - "language model"
+    - "AI agent"
+    - "agentic"
+    - "penetration test"
+    - "pentest"
+    - "offensive security"
+    - "red team"
+    - "exploit"
+    - "vulnerability exploitation"
+    - "capture the flag"
+    - "CTF"
+    - "privilege escalation"
+    - "lateral movement"
+    - "cyber attack"
+    - "hacking"
+    - "attack automation"
+
+  # Minimal noise exclusions; these flag review and never make a final decision.
+  exclusion_keywords:
+    - "protein folding"
+    - "drug discovery"
+    - "medical imaging"
+    - "climate model"
+
+  # Multi-pass: run inclusion first, then exclusion
+  multi_pass: true
+
+# --- Semantic Filter ---
+semantic_filter:
+  enabled: true
+
+  # Sentence Transformer model (runs locally, free)
+  model_name: "all-MiniLM-L6-v2"
+
+  # Semantic scores prioritize human review and do not determine final inclusion.
+  reference_sentences:
+    - "Using large language models to automate penetration testing"
+    - "LLM agents that autonomously exploit software vulnerabilities"
+    - "Language model agents solving capture the flag security challenges"
+    - "Multi-agent LLM framework for offensive security and red team operations"
+    - "Improving the success rate and cost efficiency of LLM-driven cyber attacks"
+    - "Reinforcement learning or fine-tuning to improve LLM attack agents"
+    - "Memory, planning and tool use for autonomous LLM hacking agents"
+    - "Benchmark for evaluating LLM agents on exploit generation and penetration testing"
+
+  # Thresholds for HIGH / REVIEW / LOW
+  high_threshold: 0.55
+  low_threshold: 0.30
+
+  # Weight for keyword overlap bonus (combined with semantic score)
+  keyword_weight: 0.2
+  semantic_weight: 0.8
+
+# --- Verification ---
+verification:
+  enabled: true
+
+  # Which APIs to cross-check metadata against
+  sources:
+    - openalex
+    - crossref
+    - semantic_scholar
+
+  # Fields to cross-validate
+  check_fields:
+    - title
+    - year
+    - authors
+    - doi
+
+  # If API returns error, mark as VERIFY_ERROR (not excluded)
+  error_is_not_exclusion: true
+
+# --- Citation Expansion ---
+citation_expansion:
+  enabled: true
+
+  # Expand references (papers this paper cites)
+  expand_references: true
+  # Expand cited-by (papers that cite this paper)
+  expand_cited_by: true
+
+  # Max papers to expand from (top N by semantic score)
+  max_seed_papers: 50
+  # Max new papers to add per seed
+  max_per_seed: 20
+
+  # New papers from citation go through the full pipeline again
+  refilter: true
+
+# --- Classification / Taxonomy ---
+taxonomy:
+  # Offensive-security task or target
+  attack_methods:
+    penetration_testing:
+      keywords: ["penetration test", "pentest", "pen-test"]
+    vulnerability_exploitation:
+      keywords: ["exploit generation", "vulnerability exploitation", "exploit", "cve"]
+    ctf_solving:
+      keywords: ["capture the flag", "ctf"]
+    web_attack:
+      keywords: ["web application", "sql injection", "xss", "web attack"]
+    network_intrusion:
+      keywords: ["network intrusion", "network attack", "active directory", "lateral movement"]
+    social_engineering:
+      keywords: ["phishing", "social engineering"]
+    malware_payload:
+      keywords: ["malware", "payload generation", "shellcode"]
+
+  # Stages in the offensive workflow
+  attack_stages:
+    reconnaissance:
+      keywords: ["reconnaissance", "enumeration", "scanning", "information gathering", "osint"]
+    vulnerability_discovery:
+      keywords: ["vulnerability detection", "vulnerability discovery", "fuzzing", "vulnerability analysis"]
+    exploitation:
+      keywords: ["exploitation", "exploit"]
+    privilege_escalation:
+      keywords: ["privilege escalation"]
+    lateral_movement:
+      keywords: ["lateral movement", "pivoting"]
+    post_exploitation_reporting:
+      keywords: ["post-exploitation", "persistence", "report generation"]
+
+  # Techniques used to improve the LLM/agent
+  optimization_techniques:
+    prompt_engineering:
+      keywords: ["prompt engineering", "prompt design", "few-shot", "in-context learning", "system prompt"]
+    planning_reasoning:
+      keywords: ["planning", "task tree", "tree of thought", "chain of thought", "decompos", "reasoning"]
+    multi_agent:
+      keywords: ["multi-agent", "multi agent", "agent collaboration", "role-based agents"]
+    memory_rag:
+      keywords: ["memory", "retrieval augmented", "retrieval-augmented", "rag", "knowledge base"]
+    tool_use:
+      keywords: ["tool use", "tool-augmented", "function call", "external tools", "metasploit", "nmap"]
+    fine_tuning:
+      keywords: ["fine-tun", "fine tun", "lora", "instruction tuning", "finetun"]
+    reinforcement_learning:
+      keywords: ["reinforcement learning", "policy gradient", "ppo", "reward"]
+    self_reflection_feedback:
+      keywords: ["self-reflection", "self-refine", "feedback loop", "reflexion", "self-correction", "critic"]
+    search_evolutionary:
+      keywords: ["genetic algorithm", "evolutionary", "monte carlo tree search", "mcts", "beam search", "bayesian optimization"]
+    human_in_the_loop:
+      keywords: ["human-in-the-loop", "human in the loop", "interactive", "semi-automated"]
+
+  # Open-ended improvement dimensions; uncategorized objectives remain visible.
+  optimization_objectives:
+    success_rate:
+      keywords: ["success rate", "task completion", "solve rate", "subtask completion", "attack success", "pass@"]
+    token_usage:
+      keywords: ["token", "context length", "prompt length", "token consumption", "token usage"]
+    monetary_cost:
+      keywords: ["monetary cost", "api cost", "cost-effective", "cost efficien", "cheaper", "dollar"]
+    speed_latency:
+      keywords: ["latency", "speed", "faster", "time to", "execution time", "runtime", "wall-clock", "time-efficient"]
+    step_efficiency:
+      keywords: ["number of steps", "fewer steps", "step count", "turns", "iterations", "queries"]
+    stability_reproducibility:
+      keywords: ["stability", "reproducib", "consisten", "variance", "robust", "hallucination"]
+    generalization:
+      keywords: ["generaliz", "transfer", "unseen", "cross-model", "zero-shot"]
+    autonomy:
+      keywords: ["fully autonomous", "without human", "human intervention", "end-to-end"]
+    coverage_accuracy:
+      keywords: ["coverage", "precision", "recall", "false positive", "accuracy", "f1"]
+    smaller_model_feasibility:
+      keywords: ["small model", "open-source model", "local model", "lightweight", "7b", "8b"]
+
+# --- Analysis ---
+analysis:
+  # Candidate sparse cells use absolute k and row/column support, not a global ratio.
+  sparse_max_k: 2
+  min_marginal_total: 10
+  min_total_papers: 30
+
+# --- Export ---
+export:
+  output_dir: "./output/offensive_security"
+
+  # Excel columns to include
+  excel_columns:
+    - id
+    - title
+    - authors
+    - year
+    - doi
+    - url
+    - abstract
+    - sources
+    - publication_type
+    - status
+    - semantic_score
+    - semantic_label
+    - human_decision
+    - reason_code
+    - attack_methods_auto
+    - attack_methods_manual
+    - attack_stages_auto
+    - attack_stages_manual
+    - optimization_techniques_auto
+    - optimization_techniques_manual
+    - optimization_objectives_auto
+    - optimization_objectives_manual
+    - baseline_compared
+    - measured
+    - screening_decisions
+    - verification_results
+
+# --- Storage ---
+storage:
+  # Local JSON database file
+  database_file: "./data/offensive_security_papers.sqlite3"
+
+  # Cache directory for API responses
+  cache_dir: "./data/offensive_security_cache"

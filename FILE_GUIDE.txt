@@ -1,0 +1,214 @@
+FILTERTOOL - HUONG DAN CAC FILE
+================================
+
+File nay tom tat chuc nang va tinh chat thong tin trong cac file cua du an.
+Du lieu trong data/ va output/ la du lieu runtime; cac file co the thay doi
+sau khi chay pipeline.
+
+1. FILE O THU MUC GOC
+---------------------
+
+README.md
+  Huong dan muc dich, cai dat, lenh CLI va cac file dau ra. Thong tin mang
+  tinh huong dan su dung, khong phai du lieu paper.
+
+  Tao hai bang cheo tu manual codes: Optimization Technique x Attack Method va
+  Optimization Technique x Objective; dem k/N theo hang, cot va tong. O thua
+  chi la candidate sparse cell, khong phai research gap da xac nhan.
+  Chua tham so va tu khoa do nguoi dung chon; khong chua ket qua paper.
+
+  Mo rong references/cited-by tu paper da duoc nguoi Include; luu seed, huong,
+  paper moi/da co va loi API de truy vet snowballing.
+  cau hinh build. La thong tin cau truc/build cua phan mem.
+
+  Tao auto taxonomy suggestions chi cho paper da human-include; khong tu quyet
+  dinh inclusion va khong ghi de manual codes.
+  Tai lieu nay: mo ta vai tro va loai thong tin cua cac file trong du an.
+
+  Nap task, attack-stage, optimization-technique va optimization-objective
+  dimensions; tao nhan goi y, bao gom none_detected/other_improvement.
+---------------------------
+
+  Yeu cau it nhat mot LLM/agent term va mot offensive-security term. Khong dat
+  rule hoac khop noise exclusion thi dua vao human review, khong auto-exclude.
+  Danh dau package filtertool va thong tin package co ban.
+
+  Doi chieu metadata voi API de tham khao; verification khong thay the human
+  screening va khong tu quyet dinh inclusion.
+
+ screening.py
+  Xuat/import screening workbook CSV/XLSX; validate Include/Exclude/Unsure,
+  stage, reason code va luu audit event theo title/abstract hoac full text.
+
+ coding.py
+  Import manual taxonomy codes cho paper human-included va tinh exact agreement,
+  Cohen's kappa giua suggestions auto va codes manual.
+
+ prisma.py
+  Tao PRISMA-style flow counts tu paper records, search log va human audit.
+  Export counts theo source, stage va exclusion reason ra CSV/JSON.
+
+ provenance.py
+  Tao config hash da redact credential va ghi append-only search log.
+
+Raw search records
+  output/raw_search_results.jsonl luu tung Paper record da chuan hoa tu adapter,
+  kem source/query/run id truoc dedup va filtering. Khong phai raw HTTP response.
+  hay du lieu nghien cuu.
+
+  Danh sach day du paper o dang JSON. Moi ban ghi co metadata, status, human
+  decision, screening audit, auto/manual coding va citation provenance.
+  cac o thua co the goi y khoang trong nghien cuu. Xu ly du lieu phan tich.
+
+ output/screening_sheet.xlsx / fulltext_screening_sheet.xlsx
+  Workbook cho human screening; co cot decision/reason code/reviewer/date.
+
+ output/classified_papers.xlsx
+  Coding workbook chi cho paper human-included; cot auto suggestions tach khoi
+  manual codes, baseline_compared va measured.
+  Mo rong tap paper qua references va cited-by. Xu ly metadata paper lay tu
+  cac API trich dan.
+  Workbook tu manual codes: hai cross-tab, candidate sparse cells va sheet
+  Validation Search cho researcher ghi cach kiem tra cell thua.
+
+ output/search_log.csv / run_manifest.json
+  Protocol/config hash, source/query, cache use, result counts, errors, tool/model
+  version va trang thai valid/invalid cua moi lan chay.
+
+output/raw_search_results.jsonl
+  Source records truoc cac buoc dedup/rule/semantic; dung de doi chieu thu thap.
+
+ output/prisma_counts.csv / prisma_counts.json
+  So lieu flow theo nguon, duplicate, screening decision, exclusion reason va
+  snowballing seed/direction; khong tu ket luan PRISMA da hoan tat.
+  Khai bao lenh command-line: chay pipeline, xem trang thai, export, reset va
+  import CSV. La lop giao tiep, khong phai noi luu du lieu chinh.
+
+config.py
+  Doc va truy cap cau hinh YAML. Xu ly tham so cau hinh.
+
+dedup.py
+  Phat hien paper trung lap dua tren DOI va tieu de. Xu ly metadata dinh danh.
+
+export.py
+  Xuat danh sach paper sang JSON va workbook Excel cho phan loai/phan tich;
+  dinh dang cot, lien ket, bang cheo va sheet Candidate Gaps.
+
+models.py
+  Dinh nghia Paper, PaperStatus, Source va ban ghi quyet dinh sang loc. Mo ta
+  cau truc metadata va lich su xu ly cua mot paper.
+
+normalize.py
+  Chuan hoa DOI, tieu de va ten tac gia de tim kiem/doi chieu.
+
+pipeline.py
+  Dieu phoi cac buoc tim kiem, chuan hoa, loc, kiem chung, phan loai, phan tich
+  va xuat. Ket hop du lieu tu cac module.
+
+storage.py
+  Luu paper va cache API trong SQLite; cung cap tra cuu theo ID, DOI, tieu de
+  va trang thai. Payload paper la JSON ben trong database.
+
+verify.py
+  Doi chieu metadata paper voi cac nguon API. Tao ket qua khop/lechs/loi theo
+  tung nguon de lam dau vet kiem chung.
+
+classify/__init__.py
+  Danh dau package con phan loai.
+
+classify/classifier.py
+  Ap dung taxonomy len paper va cap nhat nhan phan loai.
+
+classify/taxonomy.py
+  Nap cac nhom taxonomy va tu khoa; phan loai van ban thanh nhieu nhan.
+
+filter/__init__.py
+  Danh dau package con loc paper.
+
+filter/rule_filter.py
+  Loc theo tu khoa bao gom/loai tru; tao ket qua va ly do sang loc.
+
+filter/semantic_filter.py
+  Cham diem tuong dong ngu nghia bang sentence-transformers va gan nhan HIGH,
+  REVIEW hoac LOW.
+
+search/__init__.py
+  Danh dau package con tim kiem.
+
+search/base.py
+  Lop nen cho adapter API, request HTTP va cach doc response.
+
+search/arxiv.py
+  Tim paper tren arXiv va chuyen response thanh metadata Paper.
+
+search/crossref.py
+  Tim paper qua Crossref va chuyen response thanh metadata Paper.
+
+search/openalex.py
+  Tim paper qua OpenAlex va chuyen response thanh metadata Paper.
+
+search/semantic_scholar.py
+  Tim/tra cuu paper, references va cited-by qua Semantic Scholar.
+
+3. DU LIEU RUNTIME
+------------------
+
+data/papers.sqlite3
+  Database SQLite chinh: metadata va payload JSON cua paper, trang thai xu ly,
+  cung cache response API. Day la nguon du lieu co the tiep tuc chay pipeline.
+
+data/cache/
+  Thu muc cache response API theo file JSON, co the con lai tu cac phien ban cu.
+  Noi dung la response ky thuat, khong phai bao cao tong hop.
+
+output/all_papers.json
+  Danh sach day du paper o dang JSON. Moi ban ghi co metadata, nguon, trang
+  thai, diem/ket qua loc, kiem chung, nhan phan loai va lich su xu ly.
+
+output/classified_papers.xlsx
+  Bang paper da phan loai taxonomy. Du lieu dang cot de doc, loc va ra soat.
+
+output/crosstab.xlsx
+  Workbook phan tich: sheet CrossTab la bang cheo va danh dau o thua; sheet
+  Candidate Gaps liet ke method, technique, k/N, ty le va ID paper lien quan.
+
+4. FILE DAU RA CU
+-----------------
+
+Neu cac file sau van con trong output/, do la ket qua tu phien ban export cu.
+Pipeline moi khong cap nhat/tai tao chung:
+
+output/all_papers.xlsx
+  Ban Excel cu cua toan bo danh sach paper; noi dung trung lap voi
+  output/all_papers.json.
+
+output/filtered_papers.xlsx
+  Ban Excel cu cua danh sach paper qua loc; la mot tap con theo trang thai.
+
+output/candidate_gaps.json
+  Ban JSON cu cua danh sach gap; thong tin nay hien duoc dat trong sheet
+  Candidate Gaps cua output/crosstab.xlsx.
+
+5. METADATA GOI DA BUILD
+------------------------
+
+src/filtertool.egg-info/PKG-INFO
+  Metadata goi da tao khi build/install, gom mo ta va requirements.
+
+src/filtertool.egg-info/entry_points.txt
+  Mapping lenh filtertool toi ham CLI.
+
+src/filtertool.egg-info/dependency_links.txt
+  Metadata lien ket dependency cua goi da build.
+
+src/filtertool.egg-info/requires.txt
+  Danh sach dependencies va tuy chon dev cua goi da build.
+
+src/filtertool.egg-info/SOURCES.txt
+  Danh sach file duoc dong goi khi build.
+
+src/filtertool.egg-info/top_level.txt
+  Ten package cap cao duoc dong goi.
+
+Thu muc *.egg-info la metadata phat sinh tu qua trinh build/install; co the
+duoc tao lai va khong chua du lieu nghien cuu.

@@ -1,0 +1,22 @@
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local databases, API caches, and generated research outputs
+data/
+output/
+*.sqlite3
+*.db
+*.xlsx
+*.jsonl
+
+# Temporary review bundles and local secrets
+ai_review_copy/
+ai_review_copy.zip
+.env
+.env.*
+!.env.example
