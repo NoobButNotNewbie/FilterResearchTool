@@ -7,7 +7,7 @@ class SemanticScholarAdapter(BaseSearchAdapter):
     
     def search(self, query: str, max_results: int = 100) -> list[Paper]:
         url = f"{self.BASE_URL}/paper/search"
-        fields = "title,authors,year,abstract,externalIds,url,venue,publicationTypes,references,citations"
+        fields = "title,authors,year,abstract,externalIds,url,venue,publicationTypes"
         papers = []
         offset = 0
         limit = min(100, max_results)
@@ -75,7 +75,7 @@ class SemanticScholarAdapter(BaseSearchAdapter):
         
     def get_paper_by_doi(self, doi: str) -> Paper | None:
         url = f"{self.BASE_URL}/paper/DOI:{doi}"
-        fields = "title,authors,year,abstract,externalIds,url,venue,publicationTypes,references,citations"
+        fields = "title,authors,year,abstract,externalIds,url,venue,publicationTypes"
         headers = {}
         search_config = self.config.get("search", {})
         api_key = search_config.get("api_keys", {}).get("semantic_scholar") or search_config.get("api", {}).get("semantic_scholar_api_key")

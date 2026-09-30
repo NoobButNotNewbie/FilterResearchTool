@@ -2,6 +2,8 @@
 
 FilterTool hỗ trợ systematic mapping về việc dùng LLM/AI agent để thực hiện offensive security: penetration testing, khai thác lỗ hổng, CTF và các tác vụ liên quan. Tool chỉ thu thập và sàng lọc ứng viên; người nghiên cứu quyết định inclusion, mã hóa cuối cùng và xác minh mọi candidate sparse cell.
 
+Source code is licensed under MIT (see [LICENSE](LICENSE)). Use of the Semantic Scholar API is separately subject to its API terms and rate limits; the software license does not grant API access.
+
 ## Tính năng (Theo yêu cầu)
 - **Local & Miễn phí**: Chạy hoàn toàn trên máy cá nhân, không phụ thuộc LLM/API trả phí.
 - **Search Multi-source**: Tích hợp Semantic Scholar, OpenAlex, Crossref và arXiv. arXiv có preprint, không mặc nhiên đã peer-review.
@@ -18,21 +20,25 @@ FilterTool hỗ trợ systematic mapping về việc dùng LLM/AI agent để th
 Để tránh xung đột thư viện và cài đặt mọi thứ trên ổ E, bạn nên tạo một môi trường Python ảo (venv) riêng cho tool này.
 
 1. Mở PowerShell tại thư mục dự án (nơi có `pyproject.toml`).
-2. Tạo môi trường ảo (tên là `venv`):
+2. Tạo config local từ mẫu (không commit file local này):
+  ```powershell
+  Copy-Item config.example.yaml config.yaml
+  ```
+3. Tạo môi trường ảo (tên là `venv`):
    ```powershell
    python -m venv venv
    ```
-3. Kích hoạt môi trường ảo:
+4. Kích hoạt môi trường ảo:
    ```powershell
    .\venv\Scripts\Activate.ps1
    ```
    *(Lưu ý: Nếu bị lỗi Execution Policy, hãy chạy lệnh này trước: `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`)*
-4. Khi thấy chữ `(venv)` hiện lên ở đầu dòng lệnh, tiến hành cài đặt:
+5. Khi thấy chữ `(venv)` hiện lên ở đầu dòng lệnh, tiến hành cài đặt:
    ```powershell
    pip install -e .
    ```
 
-Tất cả thư viện giờ sẽ được cài gọn gàng trong thư mục `e:\FilterTool\venv` mà không ảnh hưởng đến hệ thống của bạn!
+Dependencies được cài trong thư mục `venv` của project, không ảnh hưởng đến Python hệ thống.
 
 ## Cách sử dụng
 

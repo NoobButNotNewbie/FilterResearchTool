@@ -9,6 +9,7 @@ __pycache__/
 # Local databases, API caches, and generated research outputs
 data/
 output/
+config.yaml
 *.sqlite3
 *.db
 *.xlsx

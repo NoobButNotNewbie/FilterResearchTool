@@ -7,6 +7,7 @@ from filtertool.models import Paper, PaperStatus
 from filtertool.prisma import build_prisma_counts
 from filtertool.pipeline import Pipeline
 from filtertool.search.crossref import CrossrefAdapter
+from filtertool.search.semantic_scholar import SemanticScholarAdapter
 from filtertool.screening import apply_screening_rows
 import yaml
 from openpyxl import load_workbook
@@ -250,6 +251,18 @@ def test_crossref_contact_email_uses_mailto_query_parameter():
         adapter.search("LLM penetration testing", max_results=1)
 
     assert request.call_args.kwargs["params"]["mailto"] == "review@example.org"
+
+
+def test_semantic_scholar_search_requests_only_parsed_fields():
+    adapter = SemanticScholarAdapter({"search": {"api": {}}})
+    with patch.object(adapter, "_make_request", return_value={"data": [], "total": 0}) as request:
+        adapter.search("LLM penetration testing", max_results=100)
+
+    fields = request.call_args.kwargs["params"]["fields"].split(",")
+    assert fields == [
+        "title", "authors", "year", "abstract", "externalIds", "url",
+        "venue", "publicationTypes",
+    ]
 
 
 def test_full_reset_preserves_human_screening_audit(tmp_path):
