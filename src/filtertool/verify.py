@@ -1,5 +1,7 @@
 import time
 import logging
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Dict, Any, List
 import requests
 from rapidfuzz import fuzz
@@ -127,20 +129,38 @@ def _compare_fields(paper: Paper, data: dict) -> dict:
 def _make_request(url: str, retry_attempts: int, retry_delay: float, rate_limit_delay: float, timeout: int) -> dict | None:
     for attempt in range(retry_attempts):
         try:
+            if attempt == 0:
+                time.sleep(rate_limit_delay)
             resp = requests.get(url, timeout=timeout)
             if resp.status_code == 200:
                 return resp.json()
             elif resp.status_code == 404:
                 return None
             elif resp.status_code == 429:
-                time.sleep(rate_limit_delay)
+                if attempt == retry_attempts - 1:
+                    resp.raise_for_status()
+                retry_after = resp.headers.get("Retry-After")
+                delay = max(rate_limit_delay, retry_delay * (2 ** attempt))
+                if retry_after:
+                    try:
+                        delay = max(delay, float(retry_after))
+                    except ValueError:
+                        try:
+                            retry_at = parsedate_to_datetime(retry_after)
+                            delay = max(
+                                delay,
+                                (retry_at - datetime.now(timezone.utc)).total_seconds(),
+                            )
+                        except (TypeError, ValueError):
+                            pass
+                time.sleep(max(0.0, delay))
                 continue
             else:
                 resp.raise_for_status()
         except requests.RequestException as e:
             if attempt == retry_attempts - 1:
                 raise e
-            time.sleep(retry_delay)
+            time.sleep(max(rate_limit_delay, retry_delay * (2 ** attempt)))
     return None
 
 def _check_semanticscholar(paper: Paper, retries: int, delay: float, rl_delay: float, timeout: int) -> dict | None:

@@ -15,6 +15,7 @@ from unittest.mock import patch
 from click.testing import CliRunner
 from filtertool.cli import cli
 from filtertool.storage import PaperStore
+from filtertool.verify import _make_request
 
 
 CONFIG = {
@@ -297,3 +298,26 @@ def test_full_reset_preserves_human_screening_audit(tmp_path):
     assert store.get(reviewed.id).screening_decisions[-1]["reason_code"] == "IC1"
     assert store.get(unreviewed.id).status == PaperStatus.NEW.value
     assert store.get(unreviewed.id).screening_decisions
+
+
+def test_verification_retries_respect_retry_after_and_spacing():
+    throttled = type(
+        "Response",
+        (),
+        {"status_code": 429, "headers": {"Retry-After": "12"}},
+    )()
+    success = type(
+        "Response",
+        (),
+        {"status_code": 200, "headers": {}, "json": lambda self: {"ok": True}},
+    )()
+
+    with (
+        patch("filtertool.verify.requests.get", side_effect=[throttled, success]) as request,
+        patch("filtertool.verify.time.sleep") as sleep,
+    ):
+        result = _make_request("https://example.test", 2, 5, 6, 10)
+
+    assert result == {"ok": True}
+    assert request.call_count == 2
+    assert [call.args[0] for call in sleep.call_args_list] == [6, 12.0]
