@@ -8,6 +8,8 @@ from rapidfuzz import fuzz
 
 from filtertool.models import Paper, PaperStatus, Source
 from filtertool.normalize import normalize_doi, normalize_title, normalize_author
+from filtertool.rate_limit import get_rate_limiter, parse_retry_after
+from filtertool.search.base import get_semantic_scholar_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +39,11 @@ def verify_papers(papers: list[Paper], config: dict) -> list[Paper]:
             result = {"verified": False, "matched_fields": [], "mismatched_fields": [], "error": None}
             try:
                 if source in {"semanticscholar", "semantic_scholar"}:
-                    data = _check_semanticscholar(paper, retry_attempts, retry_delay_seconds, rate_limit_delay_seconds, timeout_seconds)
+                    data = _check_semanticscholar(paper, retry_attempts, retry_delay_seconds, rate_limit_delay_seconds, timeout_seconds, config)
                 elif source == "openalex":
-                    data = _check_openalex(paper, retry_attempts, retry_delay_seconds, rate_limit_delay_seconds, timeout_seconds)
+                    data = _check_openalex(paper, retry_attempts, retry_delay_seconds, rate_limit_delay_seconds, timeout_seconds, config)
                 elif source == "crossref":
-                    data = _check_crossref(paper, retry_attempts, retry_delay_seconds, rate_limit_delay_seconds, timeout_seconds)
+                    data = _check_crossref(paper, retry_attempts, retry_delay_seconds, rate_limit_delay_seconds, timeout_seconds, config)
                 else:
                     continue
                 
@@ -54,10 +56,10 @@ def verify_papers(papers: list[Paper], config: dict) -> list[Paper]:
                 else:
                     all_errors = False
                     result["error"] = "Not found"
-                    
+
             except Exception as e:
                 result["error"] = str(e)
-                
+
             paper.verification_results[source] = result
 
         if verified:
@@ -126,62 +128,75 @@ def _compare_fields(paper: Paper, data: dict) -> dict:
         
     return {"verified": verified, "matched_fields": matched, "mismatched_fields": mismatched}
 
-def _make_request(url: str, retry_attempts: int, retry_delay: float, rate_limit_delay: float, timeout: int) -> dict | None:
-    for attempt in range(retry_attempts):
+def _make_request(
+    url: str, retry_attempts: int, retry_delay: float, rate_limit_delay: float,
+    timeout: int, headers: dict | None = None, config: dict | None = None,
+) -> dict | None:
+    limiter_config = config or {
+        "search": {"api": {"rate_limit_delay_seconds": rate_limit_delay}}
+    }
+    limiter = get_rate_limiter(url, limiter_config)
+    retryable_statuses = {408, 429, 500, 502, 503, 504}
+    attempts = max(1, retry_attempts)
+
+    for attempt in range(attempts):
+        limiter.wait()
         try:
-            if attempt == 0:
-                time.sleep(rate_limit_delay)
-            resp = requests.get(url, timeout=timeout)
-            if resp.status_code == 200:
-                return resp.json()
-            elif resp.status_code == 404:
+            response = requests.get(url, headers=headers, timeout=timeout)
+            if response.status_code == 200:
+                limiter.record_success()
+                return response.json()
+            if response.status_code == 404:
+                limiter.record_success()
                 return None
-            elif resp.status_code == 429:
-                if attempt == retry_attempts - 1:
-                    resp.raise_for_status()
-                retry_after = resp.headers.get("Retry-After")
-                delay = max(rate_limit_delay, retry_delay * (2 ** attempt))
-                if retry_after:
-                    try:
-                        delay = max(delay, float(retry_after))
-                    except ValueError:
-                        try:
-                            retry_at = parsedate_to_datetime(retry_after)
-                            delay = max(
-                                delay,
-                                (retry_at - datetime.now(timezone.utc)).total_seconds(),
-                            )
-                        except (TypeError, ValueError):
-                            pass
-                time.sleep(max(0.0, delay))
-                continue
-            else:
-                resp.raise_for_status()
-        except requests.RequestException as e:
-            if attempt == retry_attempts - 1:
-                raise e
-            time.sleep(max(rate_limit_delay, retry_delay * (2 ** attempt)))
+            if response.status_code not in retryable_statuses:
+                response.raise_for_status()
+            if attempt == attempts - 1:
+                response.raise_for_status()
+            limiter.record_throttle(
+                retry_delay * (2 ** attempt),
+                parse_retry_after(response.headers.get("Retry-After")),
+            )
+        except requests.RequestException as error:
+            if attempt == attempts - 1:
+                raise
+            response = getattr(error, "response", None)
+            status = response.status_code if response is not None else None
+            if status is not None and status not in retryable_statuses:
+                raise
+            retry_after = parse_retry_after(
+                response.headers.get("Retry-After") if response is not None else None
+            )
+            limiter.record_throttle(retry_delay * (2 ** attempt), retry_after)
     return None
 
-def _check_semanticscholar(paper: Paper, retries: int, delay: float, rl_delay: float, timeout: int) -> dict | None:
+def _check_semanticscholar(
+    paper: Paper, retries: int, delay: float, rl_delay: float, timeout: int,
+    config: dict | None = None,
+) -> dict | None:
     if not paper.doi:
         return None
     url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{paper.doi}?fields=title,authors,year,externalIds"
-    data = _make_request(url, retries, delay, rl_delay, timeout)
+    api_key = get_semantic_scholar_api_key(config or {})
+    headers = {"x-api-key": api_key} if api_key else None
+    data = _make_request(url, retries, delay, rl_delay, timeout, headers, config)
     if data:
         return {
             "title": data.get("title"),
             "year": data.get("year"),
             "authors": [a.get("name") for a in data.get("authors", [])],
-            "doi": data.get("externalIds", {}).get("DOI")
+            "doi": data.get("externalIds", {}).get("DOI"),
         }
     return None
 
-def _check_openalex(paper: Paper, retries: int, delay: float, rl_delay: float, timeout: int) -> dict | None:
+def _check_openalex(
+    paper: Paper, retries: int, delay: float, rl_delay: float, timeout: int,
+    config: dict | None = None,
+) -> dict | None:
     if not paper.doi:
         return None
     url = f"https://api.openalex.org/works/doi:{paper.doi}"
-    data = _make_request(url, retries, delay, rl_delay, timeout)
+    data = _make_request(url, retries, delay, rl_delay, timeout, config=config)
     if data:
         return {
             "title": data.get("title"),
@@ -191,11 +206,14 @@ def _check_openalex(paper: Paper, retries: int, delay: float, rl_delay: float, t
         }
     return None
 
-def _check_crossref(paper: Paper, retries: int, delay: float, rl_delay: float, timeout: int) -> dict | None:
+def _check_crossref(
+    paper: Paper, retries: int, delay: float, rl_delay: float, timeout: int,
+    config: dict | None = None,
+) -> dict | None:
     if not paper.doi:
         return None
     url = f"https://api.crossref.org/works/{paper.doi}"
-    data = _make_request(url, retries, delay, rl_delay, timeout)
+    data = _make_request(url, retries, delay, rl_delay, timeout, config=config)
     if data and "message" in data:
         msg = data["message"]
         title = msg.get("title", [""])[0] if msg.get("title") else ""

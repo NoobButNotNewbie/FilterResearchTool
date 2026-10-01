@@ -1,9 +1,9 @@
 import time
 import logging
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
+import os
 import requests
-from requests.exceptions import RequestException, Timeout, ConnectionError, HTTPError
+from requests.exceptions import RequestException
+from filtertool.rate_limit import get_rate_limiter, parse_retry_after
 
 logger = logging.getLogger(__name__)
 
@@ -16,39 +16,47 @@ class BaseSearchAdapter:
         
     def _make_request(self, url, params=None, headers=None) -> dict | str:
         api_config = self.config.get("search", {}).get("api", {})
-        retries = api_config.get("retry_attempts", 3)
-        retry_delay = api_config.get("retry_delay_seconds", 5)
-        rate_limit_delay = api_config.get("rate_limit_delay_seconds", 1)
+        retries = max(1, api_config.get("retry_attempts", 3))
+        retry_delay = api_config.get("retry_delay_seconds", 1)
         timeout = api_config.get("timeout_seconds", 30)
-        
+        retryable_statuses = {408, 429, 500, 502, 503, 504}
+        limiter = get_rate_limiter(url, self.config)
+
         for attempt in range(retries):
+            limiter.wait()
             try:
-                time.sleep(rate_limit_delay)
                 response = requests.get(url, params=params, headers=headers, timeout=timeout)
-                response.raise_for_status()
-                content_type = response.headers.get("Content-Type", "")
-                if "json" in content_type or "crossref" in url or "semanticscholar" in url or "openalex" in url:
-                    return response.json()
-                return response.text
-            except (Timeout, ConnectionError, HTTPError) as e:
-                logger.warning(f"Request failed (attempt {attempt + 1}/{retries}): {e}")
+            except RequestException as error:
                 if attempt < retries - 1:
-                    delay = retry_delay
-                    response = getattr(e, "response", None)
-                    if response is not None and response.status_code == 429:
-                        retry_after = response.headers.get("Retry-After")
-                        try:
-                            delay = max(delay * (2 ** attempt), float(retry_after)) if retry_after else delay * (2 ** attempt)
-                        except ValueError:
-                            try:
-                                retry_at = parsedate_to_datetime(retry_after)
-                                delay = max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
-                            except (TypeError, ValueError):
-                                delay *= 2 ** attempt
-                    time.sleep(delay)
-                else:
-                    logger.error(f"Failed to fetch from {url} after {retries} attempts.")
-                    raise
+                    delay = limiter.record_throttle(retry_delay * (2 ** attempt))
+                    logger.warning(
+                        "Request failed (attempt %s/%s), backing off %.2fs: %s",
+                        attempt + 1, retries, delay, error,
+                    )
+                    continue
+                raise
+
+            if response.status_code in retryable_statuses:
+                if attempt == retries - 1:
+                    response.raise_for_status()
+                delay = limiter.record_throttle(
+                    retry_delay * (2 ** attempt),
+                    parse_retry_after(response.headers.get("Retry-After")),
+                )
+                logger.warning(
+                    "Request returned HTTP %s (attempt %s/%s), backing off %.2fs",
+                    response.status_code, attempt + 1, retries, delay,
+                )
+                continue
+
+            response.raise_for_status()
+            limiter.record_success()
+            content_type = response.headers.get("Content-Type", "")
+            if "json" in content_type or any(
+                source in url for source in ("crossref", "semanticscholar", "openalex")
+            ):
+                return response.json()
+            return response.text
 
 
 def get_contact_email(config: dict) -> str | None:
@@ -56,6 +64,14 @@ def get_contact_email(config: dict) -> str | None:
     search = config.get("search", {})
     api = search.get("api", {})
     return api.get("contact_email") or config.get("contact_email")
+
+
+def get_semantic_scholar_api_key(config: dict) -> str | None:
+    """Prefer the local environment variable so API keys never need config commits."""
+    search = config.get("search", {})
+    api = search.get("api", {})
+    configured = search.get("api_keys", {}).get("semantic_scholar") or api.get("semantic_scholar_api_key")
+    return os.environ.get("SEMANTIC_SCHOLAR_API_KEY") or configured
 
 def get_adapter(source_name: str, config: dict) -> BaseSearchAdapter:
     from .semantic_scholar import SemanticScholarAdapter

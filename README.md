@@ -40,6 +40,16 @@ Source code is licensed under MIT (see [LICENSE](LICENSE)). Use of the Semantic 
 
 Dependencies được cài trong thư mục `venv` của project, không ảnh hưởng đến Python hệ thống.
 
+### Semantic Scholar API key (optional)
+The key is read from `SEMANTIC_SCHOLAR_API_KEY`; keep it out of `config.yaml`, `.bat` files, and Git. In PowerShell, set it for the current session before running the tool:
+```powershell
+$env:SEMANTIC_SCHOLAR_API_KEY = "<your-new-key>"
+```
+For double-click runs, add the variable through Windows User Environment Variables. Open only one FilterTool instance at a time: adaptive pacing is shared across Semantic Scholar endpoints within that process.
+
+### Request pacing
+Hosts without a configured floor start without an artificial delay and slow down on transient errors or HTTP 429 responses; successful requests gradually restore speed. The example config enforces at least 1 second between all Semantic Scholar endpoints (the introductory API-key limit) and 3 seconds for the arXiv export API. `Retry-After` is honored. The limiter is shared within one process, so do not run concurrent copies with the same API key.
+
 ## Cách sử dụng
 
 Tool cung cấp CLI (Command Line Interface) với lệnh `filtertool`. Mọi cấu hình (từ khóa, nguồn search, trọng số filter) đều nằm trong file `config.yaml`.

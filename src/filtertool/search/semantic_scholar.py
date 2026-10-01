@@ -1,6 +1,6 @@
 from filtertool.models import Paper, Source
 from filtertool.normalize import normalize_title, normalize_doi, normalize_author_list
-from .base import BaseSearchAdapter
+from .base import BaseSearchAdapter, get_semantic_scholar_api_key
 
 class SemanticScholarAdapter(BaseSearchAdapter):
     BASE_URL = "https://api.semanticscholar.org/graph/v1"
@@ -13,8 +13,7 @@ class SemanticScholarAdapter(BaseSearchAdapter):
         limit = min(100, max_results)
         
         headers = {}
-        search_config = self.config.get("search", {})
-        api_key = search_config.get("api_keys", {}).get("semantic_scholar") or search_config.get("api", {}).get("semantic_scholar_api_key")
+        api_key = get_semantic_scholar_api_key(self.config)
         if api_key:
             headers["x-api-key"] = api_key
             
@@ -77,8 +76,7 @@ class SemanticScholarAdapter(BaseSearchAdapter):
         url = f"{self.BASE_URL}/paper/DOI:{doi}"
         fields = "title,authors,year,abstract,externalIds,url,venue,publicationTypes"
         headers = {}
-        search_config = self.config.get("search", {})
-        api_key = search_config.get("api_keys", {}).get("semantic_scholar") or search_config.get("api", {}).get("semantic_scholar_api_key")
+        api_key = get_semantic_scholar_api_key(self.config)
         if api_key:
             headers["x-api-key"] = api_key
             
@@ -94,8 +92,7 @@ class SemanticScholarAdapter(BaseSearchAdapter):
         url = f"{self.BASE_URL}/paper/{paper_id}/references"
         fields = "title,authors,year,abstract,externalIds,url,venue"
         headers = {}
-        search_config = self.config.get("search", {})
-        api_key = search_config.get("api_keys", {}).get("semantic_scholar") or search_config.get("api", {}).get("semantic_scholar_api_key")
+        api_key = get_semantic_scholar_api_key(self.config)
         if api_key:
             headers["x-api-key"] = api_key
             
@@ -114,8 +111,7 @@ class SemanticScholarAdapter(BaseSearchAdapter):
         url = f"{self.BASE_URL}/paper/{paper_id}/citations"
         fields = "title,authors,year,abstract,externalIds,url,venue"
         headers = {}
-        search_config = self.config.get("search", {})
-        api_key = search_config.get("api_keys", {}).get("semantic_scholar") or search_config.get("api", {}).get("semantic_scholar_api_key")
+        api_key = get_semantic_scholar_api_key(self.config)
         if api_key:
             headers["x-api-key"] = api_key
             

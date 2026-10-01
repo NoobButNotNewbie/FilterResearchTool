@@ -1,10 +1,11 @@
-import time
 import logging
 from typing import List
 import requests
 
 from filtertool.models import Paper, PaperStatus, Source
 from filtertool.normalize import normalize_doi, normalize_title
+from filtertool.rate_limit import get_rate_limiter, parse_retry_after
+from filtertool.search.base import get_semantic_scholar_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,7 @@ def expand_citations(
     timeout = api_config.get("timeout_seconds", 30)
     retries = api_config.get("retry_attempts", 3)
     retry_delay = api_config.get("retry_delay_seconds", 5)
-    rate_limit_delay = api_config.get("rate_limit_delay_seconds", 1)
-    api_key = api_config.get("semantic_scholar_api_key")
+    api_key = get_semantic_scholar_api_key(config)
     headers = {"x-api-key": api_key} if api_key else None
 
     eligible_papers = [
@@ -52,7 +52,7 @@ def expand_citations(
             endpoint = "references" if direction == "references" else "citations"
             url = f"https://api.semanticscholar.org/graph/v1/paper/{seed_id}/{endpoint}?fields=title,authors,year,externalIds,abstract,venue,url&limit={max_per_seed}"
             found_papers, found_count, error = _fetch_papers(
-                url, paper_key, timeout, retries, retry_delay, rate_limit_delay, headers
+                url, paper_key, timeout, retries, retry_delay, config, headers
             )
             new_count = 0
             known_count = 0
@@ -106,13 +106,15 @@ def expand_citations(
 
 
 def _fetch_papers(url: str, paper_key: str, timeout: int, retries: int,
-                  retry_delay: float, rate_limit_delay: float,
+                  retry_delay: float, config: dict,
                   headers: dict | None) -> tuple[list[Paper], int, str]:
+    limiter = get_rate_limiter(url, config)
     for attempt in range(retries):
         try:
-            time.sleep(rate_limit_delay)
+            limiter.wait()
             response = requests.get(url, headers=headers, timeout=timeout)
             response.raise_for_status()
+            limiter.record_success()
             data = response.json()
             items = data.get("data") or []
             papers = []
@@ -146,7 +148,11 @@ def _fetch_papers(url: str, paper_key: str, timeout: int, retries: int,
             return papers, len(items), ""
         except Exception as error:
             if attempt + 1 < retries:
-                time.sleep(retry_delay * (2 ** attempt))
+                response = getattr(error, "response", None)
+                retry_after = parse_retry_after(
+                    response.headers.get("Retry-After") if response is not None else None
+                )
+                limiter.record_throttle(retry_delay * (2 ** attempt), retry_after)
             else:
                 return [], 0, f"{type(error).__name__}: {error}"
     return [], 0, "request failed"

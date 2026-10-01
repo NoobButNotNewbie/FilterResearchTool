@@ -7,7 +7,9 @@ from filtertool.models import Paper, PaperStatus
 from filtertool.prisma import build_prisma_counts
 from filtertool.pipeline import Pipeline
 from filtertool.search.crossref import CrossrefAdapter
+from filtertool.search.base import BaseSearchAdapter
 from filtertool.search.semantic_scholar import SemanticScholarAdapter
+from filtertool.rate_limit import AdaptiveRateLimiter, get_rate_limiter
 from filtertool.screening import apply_screening_rows
 import yaml
 from openpyxl import load_workbook
@@ -321,3 +323,78 @@ def test_verification_retries_respect_retry_after_and_spacing():
     assert result == {"ok": True}
     assert request.call_count == 2
     assert [call.args[0] for call in sleep.call_args_list] == [6, 12.0]
+
+
+def test_semantic_scholar_key_comes_from_environment():
+    adapter = SemanticScholarAdapter({"search": {"api": {"semantic_scholar_api_key": None}}})
+    with (
+        patch.dict("os.environ", {"SEMANTIC_SCHOLAR_API_KEY": "dummy-test-key"}),
+        patch.object(adapter, "_make_request", return_value={"data": [], "total": 0}) as request,
+    ):
+        adapter.search("LLM penetration testing", max_results=100)
+
+    assert request.call_args.kwargs["headers"]["x-api-key"] == "dummy-test-key"
+
+
+def test_semantic_scholar_endpoints_share_provider_floor():
+    config = {
+        "search": {
+            "api": {
+                "rate_limit_delay_seconds": 0,
+                "minimum_interval_by_host_seconds": {"api.semanticscholar.org": 1.0},
+            }
+        }
+    }
+    search_limiter = get_rate_limiter(
+        "https://api.semanticscholar.org/graph/v1/paper/search", config
+    )
+    citation_limiter = get_rate_limiter(
+        "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1/x/references", config
+    )
+
+    assert search_limiter is citation_limiter
+    assert search_limiter.minimum_interval == 1.0
+
+
+def test_adaptive_limiter_starts_fast_and_recovers_gradually():
+    limiter = AdaptiveRateLimiter(minimum_interval=0, successes_to_recover=2)
+    with patch("filtertool.rate_limit.time.sleep") as sleep:
+        limiter.wait()
+        assert not sleep.called
+        limiter.record_throttle(1)
+        limiter.wait()
+        assert sleep.call_args.args == (1,)
+        limiter.record_success()
+        limiter.record_success()
+
+    assert limiter.current_interval == 0.8
+
+
+def test_search_adapter_adapts_to_retry_after():
+    adapter = BaseSearchAdapter({
+        "search": {"api": {"retry_attempts": 2, "retry_delay_seconds": 1}}
+    })
+    throttled = type(
+        "Response",
+        (),
+        {"status_code": 429, "headers": {"Retry-After": "2"}, "raise_for_status": lambda self: None},
+    )()
+    success = type(
+        "Response",
+        (),
+        {
+            "status_code": 200,
+            "headers": {"Content-Type": "application/json"},
+            "json": lambda self: {"ok": True},
+            "raise_for_status": lambda self: None,
+        },
+    )()
+
+    with (
+        patch("filtertool.search.base.requests.get", side_effect=[throttled, success]),
+        patch("filtertool.rate_limit.time.sleep") as sleep,
+    ):
+        result = adapter._make_request("https://adaptive-test.example/api")
+
+    assert result == {"ok": True}
+    assert [call.args[0] for call in sleep.call_args_list] == [2.0]
