@@ -41,8 +41,8 @@ README.md
   stage, reason code va luu audit event theo title/abstract hoac full text.
 
  coding.py
-  Import manual taxonomy codes cho paper human-included va tinh exact agreement,
-  Cohen's kappa giua suggestions auto va codes manual.
+  Import manual taxonomy codes cho paper human-included va tinh auto/manual
+  exact agreement, kappa; day khong phai inter-rater reliability.
 
  prisma.py
   Tao PRISMA-style flow counts tu paper records, search log va human audit.

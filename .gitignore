@@ -18,6 +18,8 @@ config.yaml
 # Temporary review bundles and local secrets
 ai_review_copy/
 ai_review_copy.zip
+source_review_bundle/
+source_review_bundle.zip
 .env
 .env.*
 !.env.example

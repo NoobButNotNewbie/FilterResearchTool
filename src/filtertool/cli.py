@@ -130,30 +130,35 @@ def import_coding(config: str, coding_file: str):
 
 @cli.command("prisma")
 @click.option("--config", "-c", required=True, type=click.Path(exists=True))
-def prisma(config: str):
+@click.option("--run-id", default=None, help="Use a specific successful search run id")
+def prisma(config: str, run_id: str | None):
     """Export PRISMA-style flow counts from the local database."""
     from filtertool.pipeline import Pipeline
 
     pipeline = Pipeline(config_path=config)
-    pipeline.run_prisma()
+    pipeline.run_prisma(run_id=run_id)
     pipeline.write_run_manifest()
 
 
 @cli.command("agreement")
 @click.option("--config", "-c", required=True, type=click.Path(exists=True))
 def agreement(config: str):
-    """Report auto/manual exact agreement and Cohen's kappa."""
+    """Compare automatic suggestions with one manual coder (not inter-rater reliability)."""
     import json
-    from filtertool.coding import classification_agreement
+    from filtertool.coding import auto_manual_agreement
     from filtertool.pipeline import Pipeline
 
     pipeline = Pipeline(config_path=config)
-    results = classification_agreement(pipeline.store.get_all())
-    path = pipeline.output_dir / "classification_agreement.json"
+    results = auto_manual_agreement(pipeline.store.get_all())
+    path = pipeline.output_dir / "auto_manual_agreement.json"
     path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    click.echo(f"Agreement report: {path}")
+    click.echo(f"Auto/manual suggestion agreement report (not inter-rater reliability): {path}")
     for dimension, metrics in results.items():
-        click.echo(f"{dimension}: n={metrics['n']}, agreement={metrics['exact_agreement']}, kappa={metrics['cohen_kappa']}")
+        click.echo(
+            f"{dimension}: n={metrics['n']}, "
+            f"exact_auto_manual={metrics['exact_agreement_auto_manual']}, "
+            f"kappa_auto_manual={metrics['cohen_kappa_auto_manual']}"
+        )
 
 
 @cli.command("pilot")

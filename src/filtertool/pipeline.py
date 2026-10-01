@@ -49,6 +49,7 @@ class Pipeline:
         self.run_errors: list[dict[str, str]] = []
         self.stages_completed: list[str] = []
         self.snowballing_log: list[dict[str, Any]] = []
+        self.last_successful_search_run_id: str | None = None
         db_path = get_nested(self.config, "storage", "database_file", default="./data/papers.json")
         cache_dir = get_nested(self.config, "storage", "cache_dir", default="./data/cache")
         self.store = PaperStore(db_path=db_path, cache_dir=cache_dir)
@@ -60,6 +61,13 @@ class Pipeline:
                 previous = json.loads(prior_manifest.read_text(encoding="utf-8"))
                 if previous.get("config_hash") == self.config_hash:
                     self.snowballing_log = previous.get("snowballing_by_seed", [])
+                self.last_successful_search_run_id = previous.get("last_successful_search_run_id")
+                if (
+                    not self.last_successful_search_run_id
+                    and previous.get("status") == "complete"
+                    and {"search", "collect"}.intersection(previous.get("stages_completed", []))
+                ):
+                    self.last_successful_search_run_id = previous.get("run_id")
             except (OSError, ValueError):
                 pass
 
@@ -136,6 +144,7 @@ class Pipeline:
             "semantic_model": self.config.get("semantic_filter", {}).get("model_name"),
             "cache_bypassed": self.no_cache,
             "stages_completed": self.stages_completed,
+            "last_successful_search_run_id": self.last_successful_search_run_id,
             "status_counts": status_counts,
             "errors": self.run_errors,
             "snowballing_by_seed": self.snowballing_log,
@@ -151,25 +160,17 @@ class Pipeline:
         path = export_screening_sheet(self.store.get_all(), self.output_dir / filename, stage=stage)
         print(f"[SCREENING SHEET] {path} ({stage})")
 
-    def run_prisma(self) -> None:
+    def run_prisma(self, run_id: str | None = None) -> None:
         import csv
-        from filtertool.prisma import write_prisma_counts
+        from filtertool.prisma import select_search_events, write_prisma_counts
 
         search_log = self.output_dir / "search_log.csv"
         all_events = []
         if search_log.exists():
             with search_log.open("r", encoding="utf-8-sig", newline="") as stream:
                 all_events = list(csv.DictReader(stream))
-        matching_events = [
-            event for event in all_events
-            if event.get("activity") == "search"
-            and event.get("config_hash") == self.config_hash
-        ]
-        latest_run_id = matching_events[-1].get("run_id") if matching_events else None
-        search_events = [
-            event for event in matching_events
-            if event.get("run_id") == latest_run_id
-        ] if latest_run_id else []
+        selected_run_id = run_id or self.last_successful_search_run_id
+        search_events = select_search_events(all_events, selected_run_id)
 
         if not self.snowballing_log:
             grouped: dict[tuple[str, str], dict[str, Any]] = {}
@@ -198,11 +199,38 @@ class Pipeline:
         json_path, csv_path = write_prisma_counts(
             self.output_dir, self.store.get_all(), self.snowballing_log,
             search_events=search_events,
-            search_log_path=search_log,
             search_provenance_available=search_log.exists(),
         )
-        provenance = "complete" if search_log.exists() else "incomplete: search_log.csv is missing"
-        print(f"[PRISMA COUNTS] {json_path}; {csv_path} (search provenance {provenance})")
+        print(f"[PRISMA COUNTS] {json_path}; {csv_path} (search run {selected_run_id})")
+
+    def _record_citation_errors(self, expansions: list[dict[str, Any]]) -> None:
+        known = {
+            (
+                error.get("seed_id", ""), error.get("direction", ""),
+                error.get("error", ""),
+            )
+            for error in self.run_errors
+            if error.get("stage") == "citation_expansion"
+        }
+        for expansion in expansions:
+            message = expansion.get("error")
+            if not message:
+                continue
+            key = (
+                str(expansion.get("seed_id", "")),
+                str(expansion.get("direction", "")),
+                str(message),
+            )
+            if key in known:
+                continue
+            self.run_errors.append({
+                "stage": "citation_expansion",
+                "source": "semantic_scholar",
+                "error": key[2],
+                "seed_id": key[0],
+                "direction": key[1],
+            })
+            known.add(key)
 
     # ------------------------------------------------------------------
     # Stage 1: Search
@@ -274,6 +302,8 @@ class Pipeline:
                 self._record_search(source_name, query, len(papers), added, cache_used, error)
 
         self.store.save()
+        if not self.run_errors:
+            self.last_successful_search_run_id = self.run_id
         print(f"\n[SEARCH DONE] {total_new} new papers. Total: {self.store.count()}")
 
     def run_pilot(self, title_file: str | Path) -> Path:
@@ -454,16 +484,9 @@ class Pipeline:
         from filtertool.citation import expand_citations
 
         papers = self.store.get_all()
+        previous_expansion_count = len(self.snowballing_log)
         papers = expand_citations(papers, self.config, self.snowballing_log)
-        for expansion in self.snowballing_log:
-            if expansion.get("error"):
-                self.run_errors.append({
-                    "stage": "citation_expansion",
-                    "source": "semantic_scholar",
-                    "error": expansion["error"],
-                    "seed_id": expansion.get("seed_id", ""),
-                    "direction": expansion.get("direction", ""),
-                })
+        self._record_citation_errors(self.snowballing_log[previous_expansion_count:])
 
         # Add new papers to store
         for p in papers:
@@ -487,15 +510,6 @@ class Pipeline:
             PaperStatus.SEMANTIC_REVIEW.value,
             PaperStatus.SEMANTIC_LOW.value,
         }
-        for expansion in self.snowballing_log:
-            if expansion.get("error"):
-                self.run_errors.append({
-                    "stage": "citation_expansion",
-                    "source": "semantic_scholar",
-                    "error": expansion["error"],
-                    "seed_id": expansion.get("seed_id", ""),
-                    "direction": expansion.get("direction", ""),
-                })
         for expansion in self.snowballing_log:
             expansion["new_after_filter"] = sum(
                 any(

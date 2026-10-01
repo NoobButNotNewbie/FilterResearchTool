@@ -203,18 +203,39 @@ def export_crosstab_to_excel(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     wb.remove(wb.active)
+    coding_coverage = crosstab.get("coding_coverage", {})
+    coverage_summary = "; ".join(
+        f"{dimension}: {data.get('coded_n', 0)}/{data.get('total_included', 0)} coded"
+        for dimension, data in coding_coverage.items()
+    ) or "Coding coverage unavailable"
 
     def add_table(title: str, matrix: dict, category_header: str, dimension: str) -> None:
         ws = wb.create_sheet(title)
         headers = ["Optimization Technique", category_header, "k", "Row N", "Column N", "Total N", "k/row N", "k/column N", "k/total N", "Paper IDs"]
         widths = [30, 32, 8, 10, 12, 10, 13, 15, 13, 58]
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+        ws.cell(1, 1, f"Coding coverage: {coverage_summary}")
+        ws.cell(1, 1).font = Font(bold=True)
+        table_coverage = crosstab.get("matrix_coverage", {}).get(dimension, {})
+        matrix_complete = table_coverage.get("complete", False)
+        status_text = (
+            f"Table coded N: {table_coverage.get('coded_n', 0)}/"
+            f"{table_coverage.get('total_included', 0)} included"
+        )
+        if not matrix_complete:
+            status_text += " | CODING INCOMPLETE - sparse cells suppressed"
+        else:
+            status_text += " | coding complete"
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+        ws.cell(2, 1, status_text)
+        ws.cell(2, 1).font = Font(bold=not matrix_complete)
         for col, (header, width) in enumerate(zip(headers, widths), 1):
-            cell = ws.cell(1, col, header)
+            cell = ws.cell(3, col, header)
             cell.font = _HEADER_FONT
             cell.fill = _HEADER_FILL
             cell.border = _THIN_BORDER
             ws.column_dimensions[get_column_letter(col)].width = width
-        row = 2
+        row = 4
         sparse_keys = {
             (item.get("optimization_technique"), item.get("category"))
             for item in crosstab.get("sparse_cells", [])
@@ -236,9 +257,9 @@ def export_crosstab_to_excel(
                     for cell in ws[row]:
                         cell.fill = PatternFill("solid", fgColor="FCE4D6")
                 row += 1
-        ws.freeze_panes = "A2"
-        if row > 2:
-            ws.auto_filter.ref = f"A1:J{row - 1}"
+        ws.freeze_panes = "A4"
+        if row > 4:
+            ws.auto_filter.ref = f"A3:J{row - 1}"
 
     add_table(
         "Technique x Method", crosstab.get("matrix", {}), "Attack Method",
@@ -256,12 +277,16 @@ def export_crosstab_to_excel(
         cell.font = _HEADER_FONT
         cell.fill = _HEADER_FILL
         cell.border = _THIN_BORDER
-    for row, gap in enumerate(gaps or [], 2):
+    if not crosstab.get("coding_complete", False) and not (gaps or []):
+        gaps_ws.merge_cells("A2:H2")
+        gaps_ws.cell(2, 1, "Coding incomplete; candidate sparse cells are suppressed until related dimensions are fully coded.")
+    gap_start_row = 3 if not crosstab.get("coding_complete", False) and not (gaps or []) else 2
+    for row, gap in enumerate(gaps or [], gap_start_row):
         values = [gap.get("dimension"), gap.get("optimization_technique"), gap.get("category"), gap.get("k"), gap.get("row_n"), gap.get("column_n"), gap.get("total_n"), ", ".join(gap.get("papers", []))]
         for col, value in enumerate(values, 1):
             gaps_ws.cell(row, col, value).border = _THIN_BORDER
-    gaps_ws.freeze_panes = "A2"
-    gaps_ws.auto_filter.ref = f"A1:H{max(1, len(gaps or []) + 1)}"
+    gaps_ws.freeze_panes = f"A{gap_start_row}"
+    gaps_ws.auto_filter.ref = f"A1:H{max(1, len(gaps or []) + gap_start_row - 1)}"
     for col, width in enumerate([42, 30, 34, 8, 10, 12, 10, 58], 1):
         gaps_ws.column_dimensions[get_column_letter(col)].width = width
 

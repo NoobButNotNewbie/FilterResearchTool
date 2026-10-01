@@ -60,6 +60,39 @@ def build_crosstab(papers: list[Paper], config: dict) -> dict:
     taxonomy = config.get("taxonomy", {})
     included = [p for p in papers if _status_value(p.status) == PaperStatus.INCLUDED.value]
     total = len(included)
+    dimensions = ["attack_methods", "optimization_techniques", "optimization_objectives"]
+    coding_coverage = {
+        dimension: {
+            "coded_n": sum(bool(_labels(paper, dimension, "manual")) for paper in included),
+            "total_included": total,
+        }
+        for dimension in dimensions
+    }
+    for coverage in coding_coverage.values():
+        coverage["complete"] = total > 0 and coverage["coded_n"] == total
+
+    method_technique_papers = [
+        paper for paper in included
+        if _labels(paper, "attack_methods", "manual")
+        and _labels(paper, "optimization_techniques", "manual")
+    ]
+    technique_objective_papers = [
+        paper for paper in included
+        if _labels(paper, "optimization_techniques", "manual")
+        and _labels(paper, "optimization_objectives", "manual")
+    ]
+    matrix_coverage = {
+        "optimization_technique_x_attack_method": {
+            "coded_n": len(method_technique_papers),
+            "total_included": total,
+            "complete": total > 0 and len(method_technique_papers) == total,
+        },
+        "optimization_technique_x_objective": {
+            "coded_n": len(technique_objective_papers),
+            "total_included": total,
+            "complete": total > 0 and len(technique_objective_papers) == total,
+        },
+    }
     methods = sorted(set(taxonomy.get("attack_methods", {})) | {
         label for paper in included for label in _labels(paper, "attack_methods", "manual")
     })
@@ -71,10 +104,12 @@ def build_crosstab(papers: list[Paper], config: dict) -> dict:
     })
 
     technique_method = _build_pair_matrix(
-        included, "optimization_techniques", "attack_methods", techniques, methods, total
+        method_technique_papers, "optimization_techniques", "attack_methods", techniques,
+        methods, len(method_technique_papers),
     )
     technique_objective = _build_pair_matrix(
-        included, "optimization_techniques", "optimization_objectives", techniques, objectives, total
+        technique_objective_papers, "optimization_techniques", "optimization_objectives",
+        techniques, objectives, len(technique_objective_papers),
     )
 
     sparse_max_k = analysis_config.get("sparse_max_k", 2)
@@ -85,10 +120,12 @@ def build_crosstab(papers: list[Paper], config: dict) -> dict:
         ("optimization_technique_x_attack_method", technique_method),
         ("optimization_technique_x_objective", technique_objective),
     ):
+        if not matrix_coverage[dimension]["complete"]:
+            continue
         for row, columns in matrix.items():
             for column, cell in columns.items():
                 if (
-                    total >= min_total_papers
+                    matrix_coverage[dimension]["coded_n"] >= min_total_papers
                     and cell["row_n"] >= min_marginal_total
                     and cell["column_n"] >= min_marginal_total
                     and cell["k"] <= sparse_max_k
@@ -120,6 +157,9 @@ def build_crosstab(papers: list[Paper], config: dict) -> dict:
         "metrics": metrics,
         "sparse_cells": sparse_cells,
         "total_included": total,
+        "coding_coverage": coding_coverage,
+        "matrix_coverage": matrix_coverage,
+        "coding_complete": all(coverage["complete"] for coverage in coding_coverage.values()),
         "total_classified": total,
         "sparse_max_k": sparse_max_k,
         "min_marginal_total": min_marginal_total,

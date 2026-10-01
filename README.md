@@ -90,6 +90,7 @@ Lệnh import tạo `fulltext_screening_sheet.xlsx` cho paper Include ở vòng 
 filtertool import-coding --config config.yaml output/offensive_security/classified_papers.xlsx
 filtertool agreement --config config.yaml
 ```
+The agreement report compares automatic suggestions against one manual coder's labels; it is not inter-rater reliability.
 
 ### 4. Chạy từng bước (Single Stage)
 Nếu bạn bị ngắt quãng hoặc muốn chạy lại một bước cụ thể:

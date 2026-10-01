@@ -1,16 +1,16 @@
 from filtertool.analysis import build_crosstab
 from filtertool.classify.classifier import classify_papers
-from filtertool.coding import classification_agreement, import_manual_coding
+from filtertool.coding import auto_manual_agreement, import_manual_coding
 from filtertool.export import export_crosstab_to_excel
 from filtertool.filter.rule_filter import apply_rule_filter
 from filtertool.models import Paper, PaperStatus
-from filtertool.prisma import build_prisma_counts
+from filtertool.prisma import build_prisma_counts, select_search_events
 from filtertool.pipeline import Pipeline
 from filtertool.search.crossref import CrossrefAdapter
 from filtertool.search.base import BaseSearchAdapter
 from filtertool.search.semantic_scholar import SemanticScholarAdapter
 from filtertool.rate_limit import AdaptiveRateLimiter, get_rate_limiter
-from filtertool.screening import apply_screening_rows
+from filtertool.screening import apply_screening_rows, export_screening_sheet
 import yaml
 from openpyxl import load_workbook
 from unittest.mock import patch
@@ -18,6 +18,8 @@ from click.testing import CliRunner
 from filtertool.cli import cli
 from filtertool.storage import PaperStore
 from filtertool.verify import _make_request
+from filtertool.provenance import append_search_log, config_hash
+import json
 
 
 CONFIG = {
@@ -100,6 +102,48 @@ def test_human_decisions_drive_status_and_preserve_reason_codes():
     assert paper.screening_decisions[-1]["reason_code"] == "EC4"
 
 
+def test_title_unsure_reappears_until_resolved(tmp_path):
+    paper = Paper(title="Ambiguous LLM candidate", status=PaperStatus.REVIEW_NEEDED.value)
+    apply_screening_rows(
+        [paper],
+        [{"id": paper.id, "screening_stage": "title_abstract", "human_decision": "Unsure"}],
+    )
+    path = tmp_path / "screening.xlsx"
+    export_screening_sheet([paper], path, stage="title_abstract")
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    rows = list(workbook["Screening"].iter_rows(min_row=2, values_only=True))
+    workbook.close()
+    assert rows[0][0] == paper.id
+
+    apply_screening_rows(
+        [paper],
+        [{"id": paper.id, "screening_stage": "title_abstract", "human_decision": "Include", "reason_code": "IC1"}],
+    )
+    export_screening_sheet([paper], path, stage="title_abstract")
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    assert workbook["Screening"].max_row == 1
+    workbook.close()
+    assert paper.status == PaperStatus.HUMAN_INCLUDED.value
+
+
+def test_prisma_counts_unresolved_unsure_separately():
+    title_unsure = Paper(status=PaperStatus.REVIEW_NEEDED.value)
+    title_unsure.add_screening_decision("human_screening:title_abstract", "unsure", "review")
+    full_text_unsure = Paper(status=PaperStatus.FULLTEXT_ASSESSED.value)
+    full_text_unsure.add_screening_decision("human_screening:title_abstract", "include", "IC1")
+    full_text_unsure.add_screening_decision("human_screening:full_text", "unsure", "review")
+
+    counts = build_prisma_counts(
+        [title_unsure, full_text_unsure],
+        search_events=[{"source": "openalex", "n_returned": 2}],
+    )
+
+    assert counts["title_abstract_awaiting_resolution"] == 1
+    assert counts["full_text_unsure"] == 1
+    assert counts["full_text_awaiting_resolution"] == 1
+    assert counts["counts_are_consistent"] is False
+
+
 def test_classifier_only_suggests_for_human_included_papers():
     automatic_candidate = Paper(
         title="LLM agent uses nmap to exploit systems",
@@ -155,6 +199,79 @@ def test_prisma_uses_search_events_and_reason_codes():
     assert counts["counts_are_consistent"]
 
 
+def test_prisma_selects_one_manifest_run_and_excludes_pilot(tmp_path):
+    config = {
+        "protocol_version": "test-v1",
+        "search": {"sources": ["semantic_scholar"], "api": {}},
+        "storage": {
+            "database_file": str(tmp_path / "papers.sqlite"),
+            "cache_dir": str(tmp_path / "cache"),
+        },
+        "export": {"output_dir": str(tmp_path / "output")},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    output = tmp_path / "output"
+    output.mkdir()
+    digest = config_hash(config)
+    manifest = {
+        "status": "complete",
+        "config_hash": digest,
+        "stages_completed": ["collect"],
+        "last_successful_search_run_id": "official",
+    }
+    (output / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    common = {
+        "timestamp": "t", "activity": "search", "source": "semantic_scholar",
+        "query": "q", "year_filter": "2022-2026", "n_new": 0,
+        "cache_used": "false", "protocol_version": "test-v1", "config_hash": digest,
+    }
+    log = output / "search_log.csv"
+    append_search_log(log, dict(common, run_id="trial", n_returned=40))
+    append_search_log(log, dict(common, run_id="official", n_returned=100))
+    append_search_log(log, dict(common, run_id="pilot", activity="pilot", n_returned=20))
+
+    pipeline = Pipeline(config_path)
+    pipeline.run_prisma()
+    default_counts = json.loads((output / "prisma_counts.json").read_text(encoding="utf-8"))
+    assert default_counts["identified_records"] == 100
+
+    pipeline.run_prisma(run_id="trial")
+    explicit_counts = json.loads((output / "prisma_counts.json").read_text(encoding="utf-8"))
+    assert explicit_counts["identified_records"] == 40
+
+
+def test_prisma_selection_rejects_missing_or_invalid_run():
+    events = [
+        {"run_id": "bad", "activity": "search", "source": "openalex", "n_returned": "5", "error": "HTTP 429"}
+    ]
+    for run_id in (None, "missing", "bad"):
+        try:
+            select_search_events(events, run_id)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"run id {run_id!r} should be rejected")
+
+
+def test_config_hash_tracks_token_usage_but_redacts_credentials():
+    base = {
+        "taxonomy": {"optimization_objectives": {"token_usage": {"keywords": ["token"]}}},
+        "search": {"api": {"semantic_scholar_api_key": "key-a", "contact_email": "a@example.org"}},
+    }
+    changed_taxonomy = {
+        "taxonomy": {"optimization_objectives": {"token_usage": {"keywords": ["tokens consumed"]}}},
+        "search": {"api": {"semantic_scholar_api_key": "key-a", "contact_email": "a@example.org"}},
+    }
+    changed_credentials = {
+        "taxonomy": {"optimization_objectives": {"token_usage": {"keywords": ["token"]}}},
+        "search": {"api": {"semantic_scholar_api_key": "key-b", "contact_email": "b@example.org"}},
+    }
+
+    assert config_hash(base) != config_hash(changed_taxonomy)
+    assert config_hash(base) == config_hash(changed_credentials)
+
+
 def test_analysis_uses_manual_codes_only_for_finally_included():
     included = Paper(
         status=PaperStatus.INCLUDED.value,
@@ -173,6 +290,37 @@ def test_analysis_uses_manual_codes_only_for_finally_included():
     assert report["matrix"]["tool_use"]["penetration_testing"]["k"] == 1
     assert report["objective_matrix"]["tool_use"]["success_rate"]["k"] == 1
     assert all(cell["category"] != "ctf_solving" for cell in report["sparse_cells"])
+
+
+def test_incomplete_coding_uses_coded_n_and_suppresses_sparse_cells(tmp_path):
+    coded = [
+        Paper(
+            status=PaperStatus.INCLUDED.value,
+            attack_methods_manual=["penetration_testing"],
+            optimization_techniques_manual=["tool_use"],
+            optimization_objectives_manual=["success_rate"],
+        )
+        for _ in range(3)
+    ]
+    uncoded = [Paper(status=PaperStatus.INCLUDED.value) for _ in range(2)]
+    report = build_crosstab(coded + uncoded, CONFIG)
+
+    method_coverage = report["matrix_coverage"]["optimization_technique_x_attack_method"]
+    cell = report["matrix"]["tool_use"]["penetration_testing"]
+    assert report["total_included"] == 5
+    assert method_coverage["coded_n"] == 3 and method_coverage["complete"] is False
+    assert cell["total_n"] == 3
+    assert report["sparse_cells"] == []
+
+    workbook_path = tmp_path / "crosstab.xlsx"
+    export_crosstab_to_excel(report, workbook_path, gaps=report["sparse_cells"])
+    workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+    method_sheet = workbook["Technique x Method"]
+    assert "3/5 coded" in method_sheet["A1"].value
+    assert "CODING INCOMPLETE" in method_sheet["A2"].value
+    assert method_sheet["F4"].value == 3
+    assert "Coding incomplete" in workbook["Candidate Sparse Cells"]["A2"].value
+    workbook.close()
 
 
 def test_manual_code_import_and_exact_agreement():
@@ -194,12 +342,12 @@ def test_manual_code_import_and_exact_agreement():
         }],
         CONFIG,
     )
-    agreement = classification_agreement([paper])
+    agreement = auto_manual_agreement([paper])
 
     assert count == 1
     assert paper.measured == "yes"
-    assert agreement["attack_methods"]["exact_agreement"] == 1.0
-    assert agreement["attack_methods"]["cohen_kappa"] == 1.0
+    assert agreement["attack_methods"]["exact_agreement_auto_manual"] == 1.0
+    assert agreement["attack_methods"]["cohen_kappa_auto_manual"] == 1.0
 
 
 def test_full_run_stops_after_search_errors_and_marks_manifest_invalid(tmp_path, monkeypatch):
@@ -335,6 +483,21 @@ def test_verification_retries_respect_retry_after_and_spacing():
     assert result == {"ok": True}
     assert request.call_count == 2
     assert [call.args[0] for call in sleep.call_args_list] == [6, 12.0]
+
+
+def test_citation_expansion_errors_are_recorded_once():
+    pipeline = Pipeline.__new__(Pipeline)
+    pipeline.run_errors = []
+    failure = {
+        "seed_id": "seed-1",
+        "direction": "references",
+        "error": "HTTP 429",
+    }
+
+    pipeline._record_citation_errors([failure, failure])
+
+    assert len(pipeline.run_errors) == 1
+    assert pipeline.run_errors[0]["error"] == "HTTP 429"
 
 
 def test_semantic_scholar_key_comes_from_environment():

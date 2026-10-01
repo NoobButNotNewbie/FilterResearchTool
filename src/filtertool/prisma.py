@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import csv
 import json
+import csv
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,23 @@ def _latest_decision(paper: Paper, stage: str) -> dict[str, Any] | None:
         if decision.get("stage") == stage:
             return decision
     return None
+
+
+def select_search_events(
+    events: list[dict[str, Any]], run_id: str | None
+) -> list[dict[str, Any]]:
+    """Select exactly one successful search run; never include pilot activity."""
+    if not run_id:
+        raise ValueError("No valid search run is recorded; run collect before exporting PRISMA counts")
+    selected = [
+        event for event in events
+        if event.get("run_id") == run_id and event.get("activity") == "search"
+    ]
+    if not selected:
+        raise ValueError(f"Search run {run_id!r} has no search-log events")
+    if any(str(event.get("error") or "").strip() for event in selected):
+        raise ValueError(f"Search run {run_id!r} contains failed requests and is not valid for PRISMA")
+    return selected
 
 
 def build_prisma_counts(
@@ -65,6 +82,7 @@ def build_prisma_counts(
     full_text_not_retrieved = sum(d.get("decision") == "not_retrieved" for d in full_text_decisions.values())
     reports_assessed = sum(d.get("decision") != "not_retrieved" for d in full_text_decisions.values())
     full_text_included = sum(d.get("decision") == "include" for d in full_text_decisions.values())
+    full_text_unsure = sum(d.get("decision") == "unsure" for d in full_text_decisions.values())
     title_unsure = sum(d.get("decision") == "unsure" for d in title_decisions.values())
 
     title_exclusion_reasons: dict[str, int] = {}
@@ -88,6 +106,8 @@ def build_prisma_counts(
         and paper.id not in full_text_decisions
         for paper in papers
     )
+    title_awaiting_resolution = awaiting_title + title_unsure
+    full_text_awaiting_resolution = awaiting_full_text + full_text_unsure
     included = status_counts.get(PaperStatus.INCLUDED.value, 0)
     records_after_deduplication = max(0, len(papers) - duplicates_removed)
     search_hits_not_added = sum(
@@ -101,6 +121,7 @@ def build_prisma_counts(
         "title_decisions_reconcile": title_excluded + title_included + title_unsure == len(title_decisions),
         "full_text_decisions_reconcile": reports_assessed + full_text_not_retrieved == len(full_text_decisions),
         "final_inclusions_match_full_text_decisions": included == full_text_included,
+        "no_unresolved_unsure_decisions": title_unsure == 0 and full_text_unsure == 0,
         "reason_counts_match_exclusions": sum(title_exclusion_reasons.values()) == title_excluded
         and sum(full_text_exclusion_reasons.values()) == full_text_excluded,
     }
@@ -119,10 +140,13 @@ def build_prisma_counts(
         "title_abstract_excluded": title_excluded,
         "title_abstract_included_for_full_text": title_included,
         "title_abstract_unsure": sum(d.get("decision") == "unsure" for d in title_decisions.values()),
+        "title_abstract_awaiting_resolution": title_awaiting_resolution,
         "awaiting_title_abstract_screening": awaiting_title,
         "full_text_not_retrieved": full_text_not_retrieved,
         "reports_assessed_full_text": reports_assessed,
         "full_text_included": full_text_included,
+        "full_text_unsure": full_text_unsure,
+        "full_text_awaiting_resolution": full_text_awaiting_resolution,
         "full_text_excluded": full_text_excluded,
         "studies_included": included,
         "awaiting_full_text_screening": awaiting_full_text,
@@ -139,20 +163,15 @@ def write_prisma_counts(
     output_dir: str | Path,
     papers: list[Paper],
     snowballing: list[dict[str, Any]] | None = None,
-    search_log_path: str | Path | None = None,
     search_events: list[dict[str, Any]] | None = None,
     search_provenance_available: bool | None = None,
 ) -> tuple[Path, Path]:
     """Write machine-readable JSON and flat CSV PRISMA summaries."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    log_exists = bool(search_log_path and Path(search_log_path).exists())
     search_events = list(search_events or [])
-    if not search_events and log_exists:
-        with Path(search_log_path).open("r", encoding="utf-8-sig", newline="") as stream:
-            search_events = list(csv.DictReader(stream))
     if search_provenance_available is None:
-        search_provenance_available = log_exists or bool(search_events)
+        search_provenance_available = bool(search_events)
     counts = build_prisma_counts(
         papers, snowballing, search_events, search_provenance_available
     )
@@ -168,8 +187,9 @@ def write_prisma_counts(
         "duplicates_removed", "search_hits_not_added_or_merged", "unique_records_in_database",
         "records_after_deduplication", "title_abstract_screened", "title_abstract_excluded",
         "title_abstract_included_for_full_text", "title_abstract_unsure",
-        "awaiting_title_abstract_screening", "full_text_not_retrieved",
-        "reports_assessed_full_text", "full_text_included", "full_text_excluded", "studies_included",
+        "title_abstract_awaiting_resolution", "awaiting_title_abstract_screening", "full_text_not_retrieved",
+        "reports_assessed_full_text", "full_text_included", "full_text_unsure",
+        "full_text_awaiting_resolution", "full_text_excluded", "studies_included",
         "awaiting_full_text_screening",
     ):
         rows.append({"group": "flow", "name": key, "count": counts[key]})

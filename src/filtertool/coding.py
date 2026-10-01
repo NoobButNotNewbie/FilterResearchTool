@@ -91,8 +91,8 @@ def import_manual_coding(papers: list[Paper], rows: list[dict[str, Any]], config
     return len(prepared)
 
 
-def classification_agreement(papers: list[Paper]) -> dict[str, dict[str, Any]]:
-    """Calculate exact multi-label agreement and Cohen's kappa by dimension."""
+def auto_manual_agreement(papers: list[Paper]) -> dict[str, dict[str, Any]]:
+    """Compare automatic suggestions with one human coder; this is not inter-rater reliability."""
     results = {}
     for dimension in _DIMENSIONS:
         pairs = []
@@ -109,7 +109,10 @@ def classification_agreement(papers: list[Paper]) -> dict[str, dict[str, Any]]:
 
         n = len(pairs)
         if not n:
-            results[dimension] = {"n": 0, "exact_agreement": None, "cohen_kappa": None}
+            results[dimension] = {
+                "n": 0, "exact_agreement_auto_manual": None,
+                "cohen_kappa_auto_manual": None,
+            }
             continue
         observed = sum(manual == automatic for manual, automatic in pairs) / n
         manual_counts = Counter(manual for manual, _ in pairs)
@@ -119,7 +122,7 @@ def classification_agreement(papers: list[Paper]) -> dict[str, dict[str, Any]]:
         kappa = (observed - expected) / (1 - expected) if expected < 1 else (1.0 if observed == 1 else None)
         results[dimension] = {
             "n": n,
-            "exact_agreement": observed,
-            "cohen_kappa": kappa,
+            "exact_agreement_auto_manual": observed,
+            "cohen_kappa_auto_manual": kappa,
         }
     return results

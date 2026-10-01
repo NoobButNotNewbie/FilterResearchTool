@@ -35,9 +35,12 @@ def _status_value(status: str | PaperStatus) -> str:
     return status.value if isinstance(status, PaperStatus) else str(status)
 
 
-def _has_screening_decision(paper: Paper, stage: str) -> bool:
+def _latest_screening_decision(paper: Paper, stage: str) -> dict[str, Any] | None:
     audit_stage = f"human_screening:{stage}"
-    return any(item.get("stage") == audit_stage for item in paper.screening_decisions)
+    for decision in reversed(paper.screening_decisions):
+        if decision.get("stage") == audit_stage:
+            return decision
+    return None
 
 
 def _publication_type(paper: Paper) -> str:
@@ -75,7 +78,10 @@ def export_screening_sheet(
         candidates = [
             paper for paper in papers
             if _status_value(paper.status) not in excluded
-            and not _has_screening_decision(paper, "title_abstract")
+            and (
+                (latest := _latest_screening_decision(paper, "title_abstract")) is None
+                or latest.get("decision") == "unsure"
+            )
         ]
 
     output_path = Path(output_path)

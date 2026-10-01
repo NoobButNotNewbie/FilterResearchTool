@@ -17,8 +17,10 @@ SEARCH_LOG_FIELDS = [
 
 
 def _redact_config(value: Any, key: str = "") -> Any:
-    key_lower = key.lower()
-    if any(secret in key_lower for secret in ("api_key", "token", "email", "secret")):
+    key_lower = key.lower().replace("-", "_")
+    sensitive_names = {"api_key", "contact_email", "email", "secret", "token"}
+    sensitive_suffixes = ("_api_key", "_secret", "_token", "_email")
+    if key_lower in sensitive_names or key_lower.endswith(sensitive_suffixes):
         return "<redacted>" if value else None
     if isinstance(value, dict):
         return {child_key: _redact_config(child, child_key) for child_key, child in value.items()}

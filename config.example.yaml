@@ -227,6 +227,8 @@ taxonomy:
 
   # Techniques used to improve the LLM/agent
   optimization_techniques:
+    # Draft suggestions are noisy: memory can match memory corruption, critic can match critical,
+    # and broad terms like transfer can false-match. Review context; do not treat these as codes.
     prompt_engineering:
       keywords: ["prompt engineering", "prompt design", "few-shot", "in-context learning", "system prompt"]
     planning_reasoning:
@@ -250,6 +252,7 @@ taxonomy:
 
   # Open-ended improvement dimensions; uncategorized objectives remain visible.
   optimization_objectives:
+    # Broad performance words (precision/recall/accuracy) can false-match; verify against the abstract/full text.
     success_rate:
       keywords: ["success rate", "task completion", "solve rate", "subtask completion", "attack success", "pass@"]
     token_usage:
