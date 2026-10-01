@@ -38,16 +38,16 @@ search:
 
   # API settings
   api:
-    retry_attempts: 3             # Retry hợp lý, đủ để bù 429 nhưng không spam
-    retry_delay_seconds: 5        # Đợi 5 giây nếu lỗi tạm thời
+    retry_attempts: 2             # One retry; avoid stalling a whole query on repeated throttles
+    retry_delay_seconds: 1        # Adaptive backoff starts quickly and grows only after failures
     rate_limit_delay_seconds: 0.0 # No artificial delay for hosts without a configured floor
     minimum_interval_by_host_seconds:
       api.semanticscholar.org: 1.0
       export.arxiv.org: 3.0
-    rate_limit_recovery_factor: 0.8
-    rate_limit_successes_to_recover: 3
-    maximum_backoff_seconds: 60.0
-    timeout_seconds: 45
+    rate_limit_recovery_factor: 0.5
+    rate_limit_successes_to_recover: 1
+    maximum_backoff_seconds: 30.0
+    timeout_seconds: 20
     # Optional: Semantic Scholar API key for higher rate limits
     # Set SEMANTIC_SCHOLAR_API_KEY in the local environment; never commit the key here.
     semantic_scholar_api_key: null
