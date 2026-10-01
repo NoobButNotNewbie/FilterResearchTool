@@ -1,9 +1,19 @@
 from filtertool.models import Paper, PaperStatus
 from .taxonomy import Taxonomy
 
-def classify_papers(papers: list[Paper], config: dict) -> list[Paper]:
+def classify_papers(
+    papers: list[Paper], config: dict, include_candidates: bool = False
+) -> list[Paper]:
     taxonomy = Taxonomy(config)
     valid_statuses = {PaperStatus.HUMAN_INCLUDED, PaperStatus.INCLUDED}
+    if include_candidates:
+        valid_statuses.update({
+            PaperStatus.RULE_INCLUDED,
+            PaperStatus.REVIEW_NEEDED,
+            PaperStatus.SEMANTIC_HIGH,
+            PaperStatus.SEMANTIC_REVIEW,
+            PaperStatus.SEMANTIC_LOW,
+        })
     
     for paper in papers:
         if paper.status not in valid_statuses:

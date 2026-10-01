@@ -105,6 +105,7 @@ class Pipeline:
         self.run_dedup()
         self.run_rule_filter()
         self.run_semantic_filter()
+        self.run_classification(include_candidates=True)
         self.run_screening_export("title_abstract")
         self.run_prisma()
         self.run_export()
@@ -515,18 +516,28 @@ class Pipeline:
     # Stage 8: Classification
     # ------------------------------------------------------------------
 
-    def run_classification(self) -> None:
+    def run_classification(self, include_candidates: bool = False) -> None:
         """Classify papers using taxonomy."""
         from filtertool.classify.classifier import classify_papers
 
         papers = self.store.get_all()
-        papers = classify_papers(papers, self.config)
+        papers = classify_papers(papers, self.config, include_candidates=include_candidates)
         for p in papers:
             self.store.update(p)
         self.store.save()
 
-        n_suggested = sum(bool(p.attack_methods_auto or p.optimization_techniques_auto) for p in papers)
-        print(f"[AUTO LABELS DONE] Suggestions updated for {n_suggested} human-included papers")
+        suggestion_statuses = {
+            PaperStatus.RULE_INCLUDED.value, PaperStatus.REVIEW_NEEDED.value,
+            PaperStatus.SEMANTIC_HIGH.value, PaperStatus.SEMANTIC_REVIEW.value,
+            PaperStatus.SEMANTIC_LOW.value, PaperStatus.HUMAN_INCLUDED.value,
+            PaperStatus.INCLUDED.value,
+        }
+        n_suggested = sum(
+            p.status in suggestion_statuses
+            and bool(p.attack_methods_auto or p.optimization_techniques_auto)
+            for p in papers
+        )
+        print(f"[AUTO LABELS DONE] Suggestions updated for {n_suggested} papers; review statuses unchanged")
 
     # ------------------------------------------------------------------
     # Stage 9: Analysis
@@ -571,6 +582,24 @@ class Pipeline:
             codeable, self.output_dir / "classified_papers.xlsx", columns=columns
         )
         print(f"  Coding workbook: {cls_path} ({len(codeable)} rows)")
+
+        suggestion_statuses = {
+            PaperStatus.RULE_INCLUDED.value, PaperStatus.REVIEW_NEEDED.value,
+            PaperStatus.SEMANTIC_HIGH.value, PaperStatus.SEMANTIC_REVIEW.value,
+            PaperStatus.SEMANTIC_LOW.value, PaperStatus.HUMAN_INCLUDED.value,
+            PaperStatus.INCLUDED.value,
+        }
+        suggestions = [paper for paper in papers if paper.status in suggestion_statuses]
+        auto_columns = [
+            "id", "title", "authors", "year", "doi", "url", "abstract", "sources",
+            "publication_type", "status", "semantic_score", "semantic_label", "keyword_hits",
+            "attack_methods_auto", "attack_stages_auto", "optimization_techniques_auto",
+            "optimization_objectives_auto",
+        ]
+        suggestion_path = export_to_excel(
+            suggestions, self.output_dir / "auto_suggestions.xlsx", columns=auto_columns
+        )
+        print(f"  Auto suggestions: {suggestion_path} ({len(suggestions)} rows; not final decisions)")
 
         json_path = export_to_json(papers, self.output_dir / "all_papers.json")
         print(f"  All papers: {json_path} ({len(papers)} records)")

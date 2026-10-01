@@ -128,6 +128,7 @@ Nằm trong thư mục `output/` (hoặc đường dẫn bạn cấu hình trong
 - `search_log.csv` và `run_manifest.json`: provenance, cache, lỗi, hash cấu hình và trạng thái run.
 - `raw_search_results.jsonl`: các source records đã chuẩn hóa trước dedup/filter.
 - `screening_sheet.xlsx` / `fulltext_screening_sheet.xlsx`: quyết định human cùng reason codes.
+- `auto_suggestions.xlsx`: taxonomy gợi ý cho toàn bộ candidate; không phải human decision hay final inclusion.
 - `classified_papers.xlsx`: auto suggestions và manual coding columns.
 - `prisma_counts.csv` / `prisma_counts.json`: flow counts từ search log, audit decisions và status.
 - `crosstab.xlsx`: hai cross-tab cùng sheet `Candidate Sparse Cells` và `Validation Search`; sparse cell chưa phải gap đã xác nhận.

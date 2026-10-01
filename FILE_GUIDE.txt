@@ -165,8 +165,12 @@ output/all_papers.json
   Danh sach day du paper o dang JSON. Moi ban ghi co metadata, nguon, trang
   thai, diem/ket qua loc, kiem chung, nhan phan loai va lich su xu ly.
 
+output/auto_suggestions.xlsx
+  Taxonomy suggestions cho candidate; khong doi status review va khong phai
+  final inclusion.
+
 output/classified_papers.xlsx
-  Bang paper da phan loai taxonomy. Du lieu dang cot de doc, loc va ra soat.
+  Coding workbook cho paper human-included; auto suggestions tach khoi manual codes.
 
 output/crosstab.xlsx
   Workbook phan tich: sheet CrossTab la bang cheo va danh dau o thua; sheet

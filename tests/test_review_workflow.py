@@ -118,6 +118,18 @@ def test_classifier_only_suggests_for_human_included_papers():
     assert human_candidate.optimization_objectives_auto == ["other_improvement"]
 
 
+def test_candidate_suggestions_do_not_change_review_status():
+    candidate = Paper(
+        title="LLM agent for penetration testing",
+        status=PaperStatus.SEMANTIC_HIGH.value,
+    )
+
+    classify_papers([candidate], CONFIG, include_candidates=True)
+
+    assert candidate.attack_methods_auto == ["penetration_testing"]
+    assert candidate.status == PaperStatus.SEMANTIC_HIGH.value
+
+
 def test_prisma_uses_search_events_and_reason_codes():
     excluded = Paper(status=PaperStatus.HUMAN_EXCLUDED.value, sources=["openalex"])
     excluded.add_screening_decision(
