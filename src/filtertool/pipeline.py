@@ -197,8 +197,11 @@ class Pipeline:
         json_path, csv_path = write_prisma_counts(
             self.output_dir, self.store.get_all(), self.snowballing_log,
             search_events=search_events,
+            search_log_path=search_log,
+            search_provenance_available=search_log.exists(),
         )
-        print(f"[PRISMA COUNTS] {json_path}; {csv_path} (flow counts; sparse cells are not validated gaps)")
+        provenance = "complete" if search_log.exists() else "incomplete: search_log.csv is missing"
+        print(f"[PRISMA COUNTS] {json_path}; {csv_path} (search provenance {provenance})")
 
     # ------------------------------------------------------------------
     # Stage 1: Search

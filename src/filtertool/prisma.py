@@ -25,10 +25,15 @@ def build_prisma_counts(
     papers: list[Paper],
     snowballing: list[dict[str, Any]] | None = None,
     search_events: list[dict[str, Any]] | None = None,
+    search_provenance_available: bool | None = None,
 ) -> dict[str, Any]:
     """Build transparent flow counts; automated scores are not human exclusions."""
     statuses = [_status_value(paper.status) for paper in papers]
     status_counts = {status: statuses.count(status) for status in sorted(set(statuses))}
+    provenance_available = (
+        bool(search_events) if search_provenance_available is None
+        else search_provenance_available
+    )
     search_events = search_events or []
     identified_by_source: dict[str, int] = {}
     for event in search_events:
@@ -91,6 +96,7 @@ def build_prisma_counts(
     )
 
     checks = {
+        "search_provenance_available": provenance_available,
         "dedup_duplicates_do_not_exceed_database_records": duplicates_removed <= len(papers),
         "title_decisions_reconcile": title_excluded + title_included + title_unsure == len(title_decisions),
         "full_text_decisions_reconcile": reports_assessed + full_text_not_retrieved == len(full_text_decisions),
@@ -101,6 +107,7 @@ def build_prisma_counts(
 
     return {
         "source_records_returned": source_hits,
+        "search_provenance_available": provenance_available,
         "identified_records": identified_records,
         "identified_by_source": identified_by_source,
         "identified_via_citation_expansion": identified_via_citation,
@@ -134,15 +141,21 @@ def write_prisma_counts(
     snowballing: list[dict[str, Any]] | None = None,
     search_log_path: str | Path | None = None,
     search_events: list[dict[str, Any]] | None = None,
+    search_provenance_available: bool | None = None,
 ) -> tuple[Path, Path]:
     """Write machine-readable JSON and flat CSV PRISMA summaries."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    log_exists = bool(search_log_path and Path(search_log_path).exists())
     search_events = list(search_events or [])
-    if not search_events and search_log_path and Path(search_log_path).exists():
+    if not search_events and log_exists:
         with Path(search_log_path).open("r", encoding="utf-8-sig", newline="") as stream:
             search_events = list(csv.DictReader(stream))
-    counts = build_prisma_counts(papers, snowballing, search_events)
+    if search_provenance_available is None:
+        search_provenance_available = log_exists or bool(search_events)
+    counts = build_prisma_counts(
+        papers, snowballing, search_events, search_provenance_available
+    )
     json_path = output_dir / "prisma_counts.json"
     csv_path = output_dir / "prisma_counts.csv"
     json_path.write_text(json.dumps(counts, ensure_ascii=False, indent=2), encoding="utf-8")
