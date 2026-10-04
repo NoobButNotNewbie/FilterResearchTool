@@ -76,14 +76,58 @@ class Pipeline:
         self.write_output_guide()
 
     def write_output_guide(self) -> Path:
-        """Write a fresh description of output files for this run."""
+        """Write a fresh guide to output files and the manual review workflow."""
         path = self.output_dir / "OUTPUT_GUIDE.txt"
+        screening_sheet = self.output_dir / "screening_sheet.xlsx"
+        fulltext_sheet = self.output_dir / "fulltext_screening_sheet.xlsx"
+        coding_sheet = self.output_dir / "classified_papers.xlsx"
         content = f"""FILTERTOOL - HƯỚNG DẪN CÁC FILE OUTPUT
 Run ID: {self.run_id}
 Thời điểm khởi tạo: {self.started_at}
 
 File này được tạo lại mỗi khi chạy một lệnh FilterTool có sử dụng pipeline.
 Một số file bên dưới chỉ xuất hiện khi chạy stage/lệnh tương ứng.
+
+CÁC BƯỚC LÀM VIỆC SAU KHI CHẠY run_filtertool.bat
+
+1. Kiểm tra run_manifest.json và search_log.csv.
+   Chỉ dùng kết quả khi manifest có status "complete". Nếu là "partial",
+   đọc các warning và lỗi truy vấn trong manifest/search log trước khi tiếp tục.
+   screening_sheet.xlsx là danh sách để người nghiên cứu tự review title/abstract;
+   nhãn auto trong các workbook chỉ là gợi ý.
+
+2. Review title/abstract trong:
+   {screening_sheet}
+   Điền human_decision là Include, Exclude hoặc Unsure. Với Include/Exclude,
+   chọn reason_code tương ứng trong tab Codebook. EC3 cần giải thích trong note.
+   Lưu workbook trước khi import. Có thể nhập từng phần: dòng chưa có quyết định
+   sẽ được bỏ qua; điền thêm rồi lưu và import lại cùng workbook.
+
+   Chạy từ thư mục gốc của project:
+   .\\.venv\\Scripts\\filtertool.exe import-screening --config config.yaml "{screening_sheet}"
+
+   Lệnh này lưu các quyết định đã điền vào database và cập nhật các báo cáo.
+   Khi import quyết định title/abstract, nó cũng tạo/cập nhật workbook full-text.
+   Dữ liệu gốc tiếp tục nằm trong database; import không xóa các paper chưa review.
+
+3. Tự tìm và đọc toàn văn các bài Include. FilterTool không tải hoặc đọc bài
+   toàn văn thay người nghiên cứu. Điền human_decision và fulltext_retrieved
+   (yes/no) trong:
+   {fulltext_sheet}
+   Sau khi lưu, import bằng:
+   .\\.venv\\Scripts\\filtertool.exe import-screening --config config.yaml "{fulltext_sheet}"
+   Có thể import nhiều lần; các dòng chưa có quyết định được bỏ qua.
+
+4. Sau khi hoàn tất full-text screening, mở:
+   {coding_sheet}
+   Mã hóa thủ công nội dung bài được giữ lại: điền các cột *_manual,
+   baseline_compared và measured theo codebook/taxonomy của nghiên cứu.
+   Coding giúp tạo phân tích và bảng chéo; nhãn *_auto chỉ là gợi ý.
+   Import workbook đã lưu bằng:
+   .\\.venv\\Scripts\\filtertool.exe import-coding --config config.yaml "{coding_sheet}"
+
+5. Xem crosstab.xlsx, prisma_counts.csv/json và các báo cáo đã cập nhật.
+   Candidate sparse cells là đầu mối cần kiểm tra, không tự xác nhận research gap.
 
 CÁC FILE VÀ CHỨC NĂNG
 

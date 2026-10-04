@@ -465,6 +465,10 @@ def test_pipeline_rewrites_output_guide_for_each_run(tmp_path):
     assert first_run_id in first_guide
     assert "screening_sheet.xlsx" in first_guide
     assert "crosstab.xlsx" in first_guide
+    assert "Có thể nhập từng phần" in first_guide
+    assert "import-screening --config config.yaml" in first_guide
+    assert "import-coding --config config.yaml" in first_guide
+    assert "không tải hoặc đọc bài" in first_guide
 
     guide_path.unlink()
     guide_path.parent.rmdir()
