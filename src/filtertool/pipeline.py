@@ -18,22 +18,24 @@ Papers are NEVER deleted — only status changes.
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import platform
 import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from tqdm import tqdm
+from requests.exceptions import RequestException
 
-from filtertool.config import load_config, get_nested
+from filtertool.config import get_nested, load_config
 from filtertool.models import Paper, PaperStatus
 from filtertool.normalize import normalize_doi, normalize_title
 from filtertool.provenance import append_search_log, config_hash, utc_timestamp
 from filtertool.storage import PaperStore
+
+_SEARCH_FAILURES = (
+    RequestException, ValueError, KeyError, TypeError, IndexError, AttributeError,
+)
 
 
 class Pipeline:
@@ -47,6 +49,7 @@ class Pipeline:
         self.config_hash = config_hash(self.config)
         self.protocol_version = str(self.config.get("protocol_version", "unspecified"))
         self.run_errors: list[dict[str, str]] = []
+        self.run_warnings: list[dict[str, str]] = []
         self.stages_completed: list[str] = []
         self.snowballing_log: list[dict[str, Any]] = []
         self.last_successful_search_run_id: str | None = None
@@ -64,12 +67,77 @@ class Pipeline:
                 self.last_successful_search_run_id = previous.get("last_successful_search_run_id")
                 if (
                     not self.last_successful_search_run_id
-                    and previous.get("status") == "complete"
+                    and previous.get("status") in {"complete", "partial"}
                     and {"search", "collect"}.intersection(previous.get("stages_completed", []))
                 ):
                     self.last_successful_search_run_id = previous.get("run_id")
             except (OSError, ValueError):
                 pass
+        self.write_output_guide()
+
+    def write_output_guide(self) -> Path:
+        """Write a fresh description of output files for this run."""
+        path = self.output_dir / "OUTPUT_GUIDE.txt"
+        content = f"""FILTERTOOL - HƯỚNG DẪN CÁC FILE OUTPUT
+Run ID: {self.run_id}
+Thời điểm khởi tạo: {self.started_at}
+
+File này được tạo lại mỗi khi chạy một lệnh FilterTool có sử dụng pipeline.
+Một số file bên dưới chỉ xuất hiện khi chạy stage/lệnh tương ứng.
+
+CÁC FILE VÀ CHỨC NĂNG
+
+search_log.csv
+  Nhật ký truy vấn theo nguồn, query, số kết quả, cache, run và lỗi API.
+  Được bổ sung khi search, collect, pilot hoặc mở rộng citation.
+
+raw_search_results.jsonl
+  Metadata paper đã chuẩn hóa nhận từ các nguồn, trước dedup và filter.
+  Mỗi dòng là một record kèm run ID, nguồn, query và thông tin cache.
+
+screening_sheet.xlsx
+  Workbook để người nghiên cứu review title/abstract và nhập quyết định,
+  reason code, ghi chú và thông tin reviewer.
+
+fulltext_screening_sheet.xlsx
+  Workbook review full-text cho các paper được chuyển tiếp từ vòng title/abstract.
+
+auto_suggestions.xlsx
+  Danh sách candidate và taxonomy tự động để tham khảo; không phải quyết định
+  include/exclude của con người.
+
+classified_papers.xlsx
+  Workbook coding cho paper đã được human include; tách gợi ý tự động và
+  các cột coding thủ công.
+
+all_papers.json
+  Toàn bộ paper trong database dưới dạng JSON, bao gồm metadata và audit trail.
+
+crosstab.xlsx
+  Bảng chéo optimization technique với attack method và optimization objective.
+  Các sparse cell chỉ là ứng viên cần validation, không tự động kết luận research gap.
+
+prisma_counts.csv
+  Flow counts PRISMA-style ở dạng bảng phẳng để lọc/tổng hợp.
+
+prisma_counts.json
+  Cùng các flow counts và thông tin provenance ở dạng JSON có cấu trúc.
+
+pilot_recall.csv
+  Kết quả đối chiếu các title kỳ vọng với từng search source trong lệnh pilot.
+
+auto_manual_agreement.json
+  So sánh gợi ý auto với coding thủ công của một coder; không phải inter-rater reliability.
+
+run_manifest.json
+  Trạng thái run, stage đã chạy, hash config, phiên bản, số lượng paper,
+  cảnh báo và lỗi.
+
+OUTPUT_GUIDE.txt
+  Hướng dẫn này; được ghi mới cho mỗi lần khởi tạo pipeline.
+"""
+        path.write_text(content, encoding="utf-8")
+        return path
 
     def _record_search(self, source: str, query: str, n_returned: int, n_new: int,
                        cache_used: bool, error: str = "", activity: str = "search") -> None:
@@ -91,6 +159,19 @@ class Pipeline:
             "config_hash": self.config_hash,
             "error": error,
         })
+
+    def _paper_matches_year_filter(self, paper: Paper) -> bool:
+        search_config = self.config.get("search", {})
+        year_from = search_config.get("year_from")
+        year_to = search_config.get("year_to")
+        if year_from is None and year_to is None:
+            return True
+        if type(paper.year) is not int:
+            return False
+        return (
+            (year_from is None or paper.year >= year_from)
+            and (year_to is None or paper.year <= year_to)
+        )
 
     def _append_raw_records(self, source: str, query: str, papers: list[Paper], cache_used: bool) -> None:
         path = self.output_dir / "raw_search_results.jsonl"
@@ -115,7 +196,10 @@ class Pipeline:
         self.run_semantic_filter()
         self.run_classification(include_candidates=True)
         self.run_screening_export("title_abstract")
-        self.run_prisma()
+        if self.last_successful_search_run_id:
+            self.run_prisma()
+        else:
+            print("[PRISMA SKIPPED] No successful search run is recorded; counts were not generated.")
         self.run_export()
 
     def run_report(self) -> None:
@@ -132,7 +216,7 @@ class Pipeline:
             status_counts[status] = status_counts.get(status, 0) + 1
         manifest = {
             "run_id": self.run_id,
-            "status": "invalid" if self.run_errors else "complete",
+            "status": "invalid" if self.run_errors else "partial" if self.run_warnings else "complete",
             "valid": not self.run_errors,
             "started_at": self.started_at,
             "finished_at": utc_timestamp(),
@@ -147,6 +231,7 @@ class Pipeline:
             "last_successful_search_run_id": self.last_successful_search_run_id,
             "status_counts": status_counts,
             "errors": self.run_errors,
+            "warnings": self.run_warnings,
             "snowballing_by_seed": self.snowballing_log,
         }
         path = self.output_dir / "run_manifest.json"
@@ -161,16 +246,26 @@ class Pipeline:
         print(f"[SCREENING SHEET] {path} ({stage})")
 
     def run_prisma(self, run_id: str | None = None) -> None:
-        import csv
         from filtertool.prisma import select_search_events, write_prisma_counts
+
+        selected_run_id = run_id or self.last_successful_search_run_id
+        if not selected_run_id:
+            print("[PRISMA SKIPPED] No successful search run is recorded; counts were not generated.")
+            return
 
         search_log = self.output_dir / "search_log.csv"
         all_events = []
         if search_log.exists():
             with search_log.open("r", encoding="utf-8-sig", newline="") as stream:
                 all_events = list(csv.DictReader(stream))
-        selected_run_id = run_id or self.last_successful_search_run_id
-        search_events = select_search_events(all_events, selected_run_id)
+        partial_search = any(
+            warning.get("stage") == "search"
+            and warning.get("run_id") == selected_run_id
+            for warning in self.run_warnings
+        )
+        search_events = select_search_events(
+            all_events, selected_run_id, allow_partial=partial_search
+        )
 
         if not self.snowballing_log:
             grouped: dict[tuple[str, str], dict[str, Any]] = {}
@@ -240,11 +335,13 @@ class Pipeline:
         """Search all configured sources for papers."""
         from filtertool.search import get_adapter
 
+        self.last_successful_search_run_id = None
         sources = get_nested(self.config, "search", "sources", default=[])
         queries = get_nested(self.config, "search", "queries", default=[])
         max_results = get_nested(self.config, "search", "max_results_per_query", default=100)
 
         total_new = 0
+        successful_queries = 0
         for source_name in sources:
             try:
                 adapter = get_adapter(source_name, self.config)
@@ -272,15 +369,24 @@ class Pipeline:
                     else:
                         print(f"  [SEARCH] {source_name} / '{query}'")
                         papers = adapter.search(query, max_results=max_results)
-                        self.store.set_cache(cache_key, [p.to_dict() for p in papers])
-                except Exception as e:
+                except _SEARCH_FAILURES as e:
                     error = f"{type(e).__name__}: {e}"
-                    print(f"  [ERROR] {source_name} / '{query}': {error}")
-                    self.run_errors.append({
+                    print(f"  [WARN] {source_name} / '{query}': {error}")
+                    self.run_warnings.append({
                         "stage": "search", "source": source_name,
-                        "query": query, "error": error,
+                        "query": query, "error": error, "run_id": self.run_id,
                     })
                     papers = []
+                else:
+                    successful_queries += 1
+
+                unfiltered_count = len(papers)
+                papers = [paper for paper in papers if self._paper_matches_year_filter(paper)]
+                rejected_by_year = unfiltered_count - len(papers)
+                if rejected_by_year:
+                    print(f"[YEAR FILTER] Excluded {rejected_by_year} records outside the configured year range")
+                if not error:
+                    self.store.set_cache(cache_key, [p.to_dict() for p in papers])
 
                 if papers:
                     self._append_raw_records(source_name, query, papers, cache_used)
@@ -302,14 +408,14 @@ class Pipeline:
                 self._record_search(source_name, query, len(papers), added, cache_used, error)
 
         self.store.save()
-        if not self.run_errors:
+        if successful_queries and not self.run_errors:
             self.last_successful_search_run_id = self.run_id
         print(f"\n[SEARCH DONE] {total_new} new papers. Total: {self.store.count()}")
 
     def run_pilot(self, title_file: str | Path) -> Path:
         """Check whether known-relevant titles are discoverable from each source."""
-        import csv
         from rapidfuzz import fuzz
+
         from filtertool.search import get_adapter
 
         titles = [
@@ -324,7 +430,7 @@ class Pipeline:
         for source in self.config.get("search", {}).get("sources", []):
             try:
                 adapter = get_adapter(source, self.config)
-            except Exception as error:
+            except ValueError as error:
                 message = f"{type(error).__name__}: {error}"
                 self.run_errors.append({"stage": "pilot", "source": source, "error": message})
                 for title in titles:
@@ -351,7 +457,7 @@ class Pipeline:
                         "returned": len(results),
                         "error": "",
                     })
-                except Exception as error:
+                except _SEARCH_FAILURES as error:
                     error_text = f"{type(error).__name__}: {error}"
                     rows.append({
                         "expected_title": title, "source": source,
@@ -413,8 +519,8 @@ class Pipeline:
 
         counts = self.store.count_by_status()
         n_dup = counts.get(PaperStatus.DUPLICATE.value, 0)
-        n_dedup = counts.get(PaperStatus.DEDUPED.value, 0)
-        print(f"[DEDUP DONE] {n_dedup} unique, {n_dup} duplicates")
+        n_unique = self.store.count() - n_dup
+        print(f"[DEDUP DONE] {n_unique} unique, {n_dup} duplicates")
 
     # ------------------------------------------------------------------
     # Stage 4: Rule Filter
@@ -489,11 +595,18 @@ class Pipeline:
         self._record_citation_errors(self.snowballing_log[previous_expansion_count:])
 
         # Add new papers to store
+        existing_ids = {paper.id for paper in self.store.get_all()}
+        rejected_by_year = 0
         for p in papers:
+            if p.id not in existing_ids and not self._paper_matches_year_filter(p):
+                rejected_by_year += 1
+                continue
             if not self.store.get(p.id):
                 self.store.add(p)
             else:
                 self.store.update(p)
+        if rejected_by_year:
+            print(f"[CITATION EXPANSION] Filtered out {rejected_by_year} records outside the configured year range")
         self.store.save()
 
         # Citation discoveries re-enter candidate screening, never final inclusion.
@@ -638,6 +751,7 @@ class Pipeline:
             ("dedup", self.run_dedup),
             ("rule_filter", self.run_rule_filter),
             ("semantic_filter", self.run_semantic_filter),
+            ("classification", lambda: self.run_classification(include_candidates=True)),
             ("screening_export", self.run_screening_export),
             ("prisma", self.run_prisma),
             ("export", self.run_export),
@@ -652,7 +766,6 @@ class Pipeline:
         print("=" * 60)
 
         start = time.time()
-        stage_name = "initialization"
         for name, func in stages:
             if name in skip:
                 print(f"\n[SKIP] {name}")
@@ -661,7 +774,6 @@ class Pipeline:
             print(f"Stage: {name}")
             print(f"{'─' * 40}")
             try:
-                stage_name = name
                 func()
                 if self.run_errors:
                     raise RuntimeError("stage produced errors; inspect run_manifest.json and search_log.csv")
@@ -684,6 +796,11 @@ class Pipeline:
         print(f"Run manifest: {self.output_dir / 'run_manifest.json'}")
         if self.run_errors:
             raise RuntimeError("Run marked invalid; inspect run_manifest.json and search_log.csv")
+        if self.run_warnings:
+            print(
+                f"Run completed partially with {len(self.run_warnings)} warning(s); "
+                f"inspect run_manifest.json and search_log.csv."
+            )
         print(f"{'=' * 60}")
 
     # ------------------------------------------------------------------

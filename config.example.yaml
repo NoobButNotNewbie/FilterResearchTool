@@ -32,13 +32,14 @@ search:
   # Maximum results per query per source; adapters cap individual requests at 100.
   max_results_per_query: 100
 
-  # Year range (inclusive)
-  year_from: 2022
+  # Year range (inclusive); with a bound set, the collector excludes records without a year.
+  year_from: 2024
   year_to: 2026
 
   # API settings
   api:
-    retry_attempts: 2             # One retry; avoid stalling a whole query on repeated throttles
+    retry_attempts: 2             # Retries for transient network and server errors
+    rate_limit_retry_attempts: 5  # Extra retries for HTTP 429 responses
     retry_delay_seconds: 1        # Adaptive backoff starts quickly and grows only after failures
     rate_limit_delay_seconds: 0.0 # No artificial delay for hosts without a configured floor
     minimum_interval_by_host_seconds:

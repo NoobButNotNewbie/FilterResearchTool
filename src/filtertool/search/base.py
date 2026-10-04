@@ -1,8 +1,9 @@
-import time
 import logging
 import os
+
 import requests
 from requests.exceptions import RequestException
+
 from filtertool.rate_limit import get_rate_limiter, parse_retry_after
 
 logger = logging.getLogger(__name__)
@@ -17,12 +18,15 @@ class BaseSearchAdapter:
     def _make_request(self, url, params=None, headers=None) -> dict | str:
         api_config = self.config.get("search", {}).get("api", {})
         retries = max(1, api_config.get("retry_attempts", 3))
+        rate_limit_retries = max(
+            retries, api_config.get("rate_limit_retry_attempts", 5)
+        )
         retry_delay = api_config.get("retry_delay_seconds", 1)
         timeout = api_config.get("timeout_seconds", 30)
         retryable_statuses = {408, 429, 500, 502, 503, 504}
         limiter = get_rate_limiter(url, self.config)
 
-        for attempt in range(retries):
+        for attempt in range(max(retries, rate_limit_retries)):
             limiter.wait()
             try:
                 response = requests.get(url, params=params, headers=headers, timeout=timeout)
@@ -37,7 +41,10 @@ class BaseSearchAdapter:
                 raise
 
             if response.status_code in retryable_statuses:
-                if attempt == retries - 1:
+                max_attempts = (
+                    rate_limit_retries if response.status_code == 429 else retries
+                )
+                if attempt >= max_attempts - 1:
                     response.raise_for_status()
                 delay = limiter.record_throttle(
                     retry_delay * (2 ** attempt),
@@ -45,7 +52,7 @@ class BaseSearchAdapter:
                 )
                 logger.warning(
                     "Request returned HTTP %s (attempt %s/%s), backing off %.2fs",
-                    response.status_code, attempt + 1, retries, delay,
+                    response.status_code, attempt + 1, max_attempts, delay,
                 )
                 continue
 
@@ -74,11 +81,11 @@ def get_semantic_scholar_api_key(config: dict) -> str | None:
     return os.environ.get("SEMANTIC_SCHOLAR_API_KEY") or configured
 
 def get_adapter(source_name: str, config: dict) -> BaseSearchAdapter:
-    from .semantic_scholar import SemanticScholarAdapter
-    from .openalex import OpenAlexAdapter
+    from .arxiv import ArxivAdapter
     from .crossref import CrossrefAdapter
     from .dblp import DBLPAdapter
-    from .arxiv import ArxivAdapter
+    from .openalex import OpenAlexAdapter
+    from .semantic_scholar import SemanticScholarAdapter
     
     adapters = {
         "SEMANTIC_SCHOLAR": SemanticScholarAdapter,

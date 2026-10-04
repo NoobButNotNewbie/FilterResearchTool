@@ -1,4 +1,4 @@
-from typing import List
+
 from ..models import Paper, PaperStatus
 
 try:
@@ -16,7 +16,7 @@ def _get_model(model_name: str):
         _model = SentenceTransformer(model_name)
     return _model
 
-def apply_semantic_filter(papers: List[Paper], config: dict) -> List[Paper]:
+def apply_semantic_filter(papers: list[Paper], config: dict) -> list[Paper]:
     """
     Applies semantic filtering using Sentence Transformers.
     Updates paper status, semantic score, and semantic label.
@@ -40,7 +40,13 @@ def apply_semantic_filter(papers: List[Paper], config: dict) -> List[Paper]:
     keyword_target = max(1, rule_config.get("min_keyword_hits", 1))
         
     # Semantic scores prioritize human review; they do not determine inclusion.
-    eligible_statuses = {PaperStatus.RULE_INCLUDED, PaperStatus.REVIEW_NEEDED}
+    eligible_statuses = {
+        PaperStatus.RULE_INCLUDED,
+        PaperStatus.REVIEW_NEEDED,
+        PaperStatus.SEMANTIC_HIGH,
+        PaperStatus.SEMANTIC_REVIEW,
+        PaperStatus.SEMANTIC_LOW,
+    }
     papers_to_process = [p for p in papers if p.status in eligible_statuses]
     
     if not papers_to_process:

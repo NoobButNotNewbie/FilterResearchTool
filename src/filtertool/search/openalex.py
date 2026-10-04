@@ -1,6 +1,10 @@
+from requests.exceptions import RequestException
+
 from filtertool.models import Paper, Source
-from filtertool.normalize import normalize_title, normalize_doi, normalize_author_list
+from filtertool.normalize import normalize_author_list, normalize_doi, normalize_title
+
 from .base import BaseSearchAdapter, get_contact_email
+
 
 class OpenAlexAdapter(BaseSearchAdapter):
     BASE_URL = "https://api.openalex.org/works"
@@ -103,6 +107,6 @@ class OpenAlexAdapter(BaseSearchAdapter):
             data = self._make_request(url, params=params)
             if data and data.get("id"):
                 return self._parse_paper(data)
-        except Exception:
+        except (RequestException, ValueError, KeyError, TypeError, IndexError, AttributeError):
             return None
         return None

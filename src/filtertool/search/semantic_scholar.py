@@ -1,6 +1,14 @@
+import logging
+
+from requests.exceptions import RequestException
+
 from filtertool.models import Paper, Source
-from filtertool.normalize import normalize_title, normalize_doi, normalize_author_list
+from filtertool.normalize import normalize_author_list, normalize_doi, normalize_title
+
 from .base import BaseSearchAdapter, get_semantic_scholar_api_key
+
+logger = logging.getLogger(__name__)
+
 
 class SemanticScholarAdapter(BaseSearchAdapter):
     BASE_URL = "https://api.semanticscholar.org/graph/v1"
@@ -84,7 +92,7 @@ class SemanticScholarAdapter(BaseSearchAdapter):
             data = self._make_request(url, params={"fields": fields}, headers=headers)
             if data:
                 return self._parse_paper(data)
-        except Exception:
+        except (RequestException, ValueError, KeyError, TypeError, IndexError, AttributeError):
             return None
         return None
 
@@ -103,8 +111,8 @@ class SemanticScholarAdapter(BaseSearchAdapter):
                 cited = item.get("citedPaper", {})
                 if cited:
                     papers.append(self._parse_paper(cited))
-        except Exception:
-            pass
+        except (RequestException, ValueError, KeyError, TypeError, IndexError, AttributeError) as error:
+            logger.warning("Failed to fetch references for %s: %s", paper_id, error)
         return papers
         
     def get_citations(self, paper_id: str) -> list[Paper]:
@@ -122,6 +130,6 @@ class SemanticScholarAdapter(BaseSearchAdapter):
                 citing = item.get("citingPaper", {})
                 if citing:
                     papers.append(self._parse_paper(citing))
-        except Exception:
-            pass
+        except (RequestException, ValueError, KeyError, TypeError, IndexError, AttributeError) as error:
+            logger.warning("Failed to fetch citations for %s: %s", paper_id, error)
         return papers

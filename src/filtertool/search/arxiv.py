@@ -1,11 +1,18 @@
 import xml.etree.ElementTree as ET
+from typing import ClassVar
+
 from filtertool.models import Paper, Source
-from filtertool.normalize import normalize_title, normalize_doi, normalize_author_list
+from filtertool.normalize import normalize_author_list, normalize_doi, normalize_title
+
 from .base import BaseSearchAdapter
+
 
 class ArxivAdapter(BaseSearchAdapter):
     BASE_URL = "http://export.arxiv.org/api/query"
-    NS = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+    NS: ClassVar[dict[str, str]] = {
+        "atom": "http://www.w3.org/2005/Atom",
+        "arxiv": "http://arxiv.org/schemas/atom",
+    }
     
     def search(self, query: str, max_results: int = 100) -> list[Paper]:
         papers = []

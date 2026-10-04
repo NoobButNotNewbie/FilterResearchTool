@@ -1,8 +1,10 @@
-from typing import List, Dict
+
 from rapidfuzz import fuzz
+
 from .models import Paper, PaperStatus
 
-def deduplicate(papers: List[Paper], config: dict) -> List[Paper]:
+
+def deduplicate(papers: list[Paper], config: dict) -> list[Paper]:
     """
     Deduplicates papers using exact DOI match and fuzzy title match.
     Updates paper status, sources, and adds screening decisions.
@@ -20,8 +22,8 @@ def deduplicate(papers: List[Paper], config: dict) -> List[Paper]:
     fuzzy_threshold = fuzzy_config.get("threshold", 90)
 
     # Phase 1: DOI exact match
-    doi_map: Dict[str, Paper] = {}
-    active_papers: List[Paper] = []
+    doi_map: dict[str, Paper] = {}
+    active_papers: list[Paper] = []
     
     for paper in papers:
         if paper.status == PaperStatus.DUPLICATE:

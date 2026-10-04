@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -61,9 +60,9 @@ class ScreeningDecision:
     stage: str          # e.g. "rule_filter", "semantic_filter", "verification"
     decision: str       # e.g. "included", "excluded", "high", "review", "low"
     reason: str         # human-readable explanation
-    score: Optional[float] = None
-    reason_code: Optional[str] = None
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    score: float | None = None
+    reason_code: str | None = None
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -94,13 +93,13 @@ class Paper:
     title: str = ""
     title_normalized: str = ""          # lowered, stripped, for dedup
     authors: list[str] = field(default_factory=list)
-    year: Optional[int] = None
-    doi: Optional[str] = None
-    doi_normalized: Optional[str] = None  # lowered, prefix-stripped
-    abstract: Optional[str] = None
-    url: Optional[str] = None
-    venue: Optional[str] = None
-    publication_type: Optional[str] = None  # journal, conference, preprint
+    year: int | None = None
+    doi: str | None = None
+    doi_normalized: str | None = None  # lowered, prefix-stripped
+    abstract: str | None = None
+    url: str | None = None
+    venue: str | None = None
+    publication_type: str | None = None  # journal, conference, preprint
 
     # --- Source tracking ---
     sources: list[str] = field(default_factory=list)
@@ -109,27 +108,27 @@ class Paper:
 
     # --- Pipeline status ---
     status: str = PaperStatus.NEW.value
-    duplicate_of: Optional[str] = None  # ID of canonical paper if duplicate
+    duplicate_of: str | None = None  # ID of canonical paper if duplicate
 
     # --- Screening audit trail ---
     screening_decisions: list[dict] = field(default_factory=list)
     # Each entry is a ScreeningDecision.to_dict()
 
     # --- Semantic filtering ---
-    semantic_score: Optional[float] = None
-    semantic_label: Optional[str] = None  # HIGH / REVIEW / LOW
+    semantic_score: float | None = None
+    semantic_label: str | None = None  # HIGH / REVIEW / LOW
 
     # --- Keyword match info ---
     keyword_hits: list[str] = field(default_factory=list)
     keyword_hit_count: int = 0
 
     # --- Human screening ---
-    screening_stage: Optional[str] = None
-    human_decision: Optional[str] = None
-    reason_code: Optional[str] = None
-    screening_note: Optional[str] = None
-    reviewer: Optional[str] = None
-    review_date: Optional[str] = None
+    screening_stage: str | None = None
+    human_decision: str | None = None
+    reason_code: str | None = None
+    screening_note: str | None = None
+    reviewer: str | None = None
+    review_date: str | None = None
 
     # --- Verification ---
     verification_results: dict[str, dict] = field(default_factory=dict)
@@ -147,8 +146,8 @@ class Paper:
     optimization_techniques_manual: list[str] = field(default_factory=list)
     optimization_objectives_auto: list[str] = field(default_factory=list)
     optimization_objectives_manual: list[str] = field(default_factory=list)
-    baseline_compared: Optional[str] = None
-    measured: Optional[str] = None
+    baseline_compared: str | None = None
+    measured: str | None = None
 
     # --- Citation expansion ---
     reference_dois: list[str] = field(default_factory=list)
@@ -157,21 +156,21 @@ class Paper:
     citation_expanded: bool = False
 
     # --- Timestamps ---
-    added_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    added_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     # ----- Methods -----
 
     def add_screening_decision(self, stage: str, decision: str, reason: str,
-                                score: Optional[float] = None,
-                                reason_code: Optional[str] = None) -> None:
+                                score: float | None = None,
+                                reason_code: str | None = None) -> None:
         """Append a screening decision to the audit trail."""
         sd = ScreeningDecision(
             stage=stage, decision=decision, reason=reason, score=score,
             reason_code=reason_code,
         )
         self.screening_decisions.append(sd.to_dict())
-        self.updated_at = datetime.now().isoformat()
+        self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def add_source(self, source: str, external_id: str = "") -> None:
         """Register that this paper was found via a particular source."""

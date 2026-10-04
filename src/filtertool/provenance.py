@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 SEARCH_LOG_FIELDS = [
     "timestamp", "run_id", "activity", "source", "query", "year_filter", "n_returned", "n_new",
     "cache_used", "protocol_version", "config_hash", "error",

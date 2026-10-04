@@ -1,26 +1,28 @@
+import json
+from datetime import datetime
+from unittest.mock import patch
+
+import yaml
+from click.testing import CliRunner
+from openpyxl import load_workbook
+
 from filtertool.analysis import build_crosstab
 from filtertool.classify.classifier import classify_papers
+from filtertool.cli import cli
 from filtertool.coding import auto_manual_agreement, import_manual_coding
 from filtertool.export import export_crosstab_to_excel
 from filtertool.filter.rule_filter import apply_rule_filter
 from filtertool.models import Paper, PaperStatus
-from filtertool.prisma import build_prisma_counts, select_search_events
 from filtertool.pipeline import Pipeline
-from filtertool.search.crossref import CrossrefAdapter
-from filtertool.search.base import BaseSearchAdapter
-from filtertool.search.semantic_scholar import SemanticScholarAdapter
+from filtertool.prisma import build_prisma_counts, select_search_events
+from filtertool.provenance import append_search_log, config_hash
 from filtertool.rate_limit import AdaptiveRateLimiter, get_rate_limiter
 from filtertool.screening import apply_screening_rows, export_screening_sheet
-import yaml
-from openpyxl import load_workbook
-from unittest.mock import patch
-from click.testing import CliRunner
-from filtertool.cli import cli
+from filtertool.search.base import BaseSearchAdapter
+from filtertool.search.crossref import CrossrefAdapter
+from filtertool.search.semantic_scholar import SemanticScholarAdapter
 from filtertool.storage import PaperStore
 from filtertool.verify import _make_request
-from filtertool.provenance import append_search_log, config_hash
-import json
-
 
 CONFIG = {
     "rule_filter": {
@@ -61,6 +63,86 @@ def test_rule_filter_requires_llm_and_offensive_terms():
     assert "protein folding" in noisy.screening_decisions[-1]["reason"]
 
 
+def test_rule_filter_rescreens_automated_results_but_preserves_human_decisions():
+    candidate = Paper(
+        title="Large language model for penetration testing",
+        status=PaperStatus.SEMANTIC_LOW.value,
+    )
+    unrelated = Paper(
+        title="A study of clinical imaging",
+        status=PaperStatus.SEMANTIC_HIGH.value,
+    )
+    reviewed = Paper(
+        title="Human-reviewed paper",
+        status=PaperStatus.HUMAN_EXCLUDED.value,
+        human_decision="Exclude",
+        reason_code="EC2",
+    )
+    reviewed.add_screening_decision(
+        "human_screening:title_abstract", "exclude", "Out of scope", reason_code="EC2"
+    )
+
+    apply_rule_filter([candidate, unrelated, reviewed], CONFIG)
+
+    assert candidate.status == PaperStatus.RULE_INCLUDED.value
+    assert unrelated.status == PaperStatus.REVIEW_NEEDED.value
+    assert reviewed.status == PaperStatus.HUMAN_EXCLUDED.value
+    assert reviewed.human_decision == "Exclude"
+
+
+def test_semantic_filter_rechecks_existing_semantic_statuses(monkeypatch):
+    from filtertool.filter import semantic_filter
+
+    class Scores:
+        def __init__(self, values):
+            self._values = values
+
+        def max(self, dim):
+            return self
+
+        @property
+        def values(self):
+            return self
+
+        def tolist(self):
+            return self._values
+
+    class Model:
+        def encode(self, texts, convert_to_tensor=True):
+            return texts
+
+    class Similarity:
+        @staticmethod
+        def cos_sim(papers, references):
+            return Scores([0.9 for _ in papers])
+
+    paper = Paper(
+        title="LLM agent automates penetration testing",
+        status=PaperStatus.SEMANTIC_LOW.value,
+    )
+    paper.keyword_hit_count = 2
+    monkeypatch.setattr(semantic_filter, "SentenceTransformer", Model)
+    monkeypatch.setattr(semantic_filter, "_get_model", lambda _: Model())
+    monkeypatch.setattr(semantic_filter, "util", Similarity)
+
+    semantic_filter.apply_semantic_filter(
+        [paper],
+        {
+            "semantic_filter": {
+                "reference_sentences": ["LLM agents for penetration testing"],
+                "high_threshold": 0.7,
+                "low_threshold": 0.3,
+                "semantic_weight": 0.8,
+                "keyword_weight": 0.2,
+            },
+            "rule_filter": {"min_keyword_hits": 2},
+        },
+    )
+
+    assert paper.semantic_label == "HIGH"
+    assert paper.status == PaperStatus.SEMANTIC_HIGH.value
+
+
 def test_screening_import_validates_batch_before_mutation():
     paper = Paper(title="Candidate")
     rows = [
@@ -94,12 +176,29 @@ def test_human_decisions_drive_status_and_preserve_reason_codes():
             "id": paper.id,
             "screening_stage": "full_text",
             "human_decision": "Exclude",
-            "reason_code": "EC4",
+            "reason_code": "EC2",
             "fulltext_retrieved": "yes",
         }],
     )
     assert paper.status == PaperStatus.FULLTEXT_EXCLUDED.value
-    assert paper.screening_decisions[-1]["reason_code"] == "EC4"
+    assert paper.screening_decisions[-1]["reason_code"] == "EC2"
+
+
+def test_screening_import_skips_rows_without_decisions():
+    reviewed = Paper(title="Reviewed candidate")
+    pending = Paper(title="Not reviewed yet")
+
+    imported = apply_screening_rows(
+        [reviewed, pending],
+        [
+            {"id": reviewed.id, "human_decision": "Exclude", "reason_code": "EC1"},
+            {"id": pending.id, "human_decision": ""},
+        ],
+    )
+
+    assert imported == 1
+    assert reviewed.status == PaperStatus.HUMAN_EXCLUDED.value
+    assert pending.status == PaperStatus.NEW.value
 
 
 def test_title_unsure_reappears_until_resolved(tmp_path):
@@ -124,6 +223,62 @@ def test_title_unsure_reappears_until_resolved(tmp_path):
     assert workbook["Screening"].max_row == 1
     workbook.close()
     assert paper.status == PaperStatus.HUMAN_INCLUDED.value
+
+
+def test_screening_sheet_has_fixed_dependent_reason_dropdowns(tmp_path):
+    path = tmp_path / "screening.xlsx"
+    export_screening_sheet([Paper(title="Candidate")], path)
+
+    workbook = load_workbook(path)
+    sheet = workbook["Screening"]
+    validations = list(sheet.data_validations.dataValidation)
+
+    assert any(validation.formula1 == '"Include,Exclude,Unsure"' for validation in validations)
+    reason_validation = next(
+        validation for validation in validations
+        if validation.type == "list" and "N2" in str(validation.sqref)
+    )
+    assert "IncludeReasonCodes" in reason_validation.formula1
+    assert "ExcludeReasonCodes" in reason_validation.formula1
+    codebook = workbook["Codebook"]
+    assert codebook["A2"].value == "IC1"
+    assert codebook["A3"].value == "IC2"
+    assert codebook["B2"].value == "EC1"
+    assert codebook["B4"].value == "EC3"
+    workbook.close()
+
+
+def test_screening_date_updates_on_decision_or_reason_change_only():
+    paper = Paper(title="Candidate")
+    apply_screening_rows(
+        [paper], [{"id": paper.id, "human_decision": "Include", "reason_code": "IC1"}]
+    )
+    assert paper.review_date == datetime.now().astimezone().date().isoformat()
+
+    paper.review_date = "2000-01-01"
+    apply_screening_rows(
+        [paper], [{"id": paper.id, "human_decision": "Include", "reason_code": "IC1"}]
+    )
+    assert paper.review_date == "2000-01-01"
+
+    apply_screening_rows(
+        [paper], [{"id": paper.id, "human_decision": "Exclude", "reason_code": "EC1"}]
+    )
+    assert paper.review_date == datetime.now().astimezone().date().isoformat()
+
+
+def test_screening_import_rejects_reason_codes_outside_codebook():
+    paper = Paper(title="Candidate")
+    try:
+        apply_screening_rows(
+            [paper], [{"id": paper.id, "human_decision": "Exclude", "reason_code": "EC9"}]
+        )
+    except ValueError as error:
+        assert "reason_code" in str(error)
+    else:
+        raise AssertionError("reason codes outside the fixed codebook should be rejected")
+
+    assert paper.status == PaperStatus.NEW.value
 
 
 def test_prisma_counts_unresolved_unsure_separately():
@@ -252,6 +407,73 @@ def test_prisma_selection_rejects_missing_or_invalid_run():
             pass
         else:
             raise AssertionError(f"run id {run_id!r} should be rejected")
+
+
+def test_prepare_review_skips_prisma_without_successful_search_run(tmp_path, capsys):
+    config = {
+        "protocol_version": "test-v1",
+        "search": {"sources": ["openalex"], "api": {}},
+        "storage": {
+            "database_file": str(tmp_path / "papers.sqlite"),
+            "cache_dir": str(tmp_path / "cache"),
+        },
+        "export": {"output_dir": str(tmp_path / "output")},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    pipeline = Pipeline(config_path)
+    completed = []
+    pipeline.run_normalize = lambda: completed.append("normalize")
+    pipeline.run_dedup = lambda: completed.append("dedup")
+    pipeline.run_rule_filter = lambda: completed.append("rule_filter")
+    pipeline.run_semantic_filter = lambda: completed.append("semantic_filter")
+    pipeline.run_classification = lambda include_candidates=False: completed.append("classification")
+    pipeline.run_screening_export = lambda stage: completed.append("screening_export")
+    pipeline.run_export = lambda: completed.append("export")
+
+    def unexpected_prisma():
+        raise AssertionError("PRISMA must not run without a successful search")
+
+    pipeline.run_prisma = unexpected_prisma
+    pipeline.run_stage("prepare_review")
+
+    assert completed == [
+        "normalize", "dedup", "rule_filter", "semantic_filter",
+        "classification", "screening_export", "export",
+    ]
+    assert "PRISMA SKIPPED" in capsys.readouterr().out
+    manifest = json.loads((tmp_path / "output" / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "complete"
+    assert not (tmp_path / "output" / "prisma_counts.json").exists()
+
+
+def test_pipeline_rewrites_output_guide_for_each_run(tmp_path):
+    config = {
+        "storage": {
+            "database_file": str(tmp_path / "papers.sqlite"),
+            "cache_dir": str(tmp_path / "cache"),
+        },
+        "export": {"output_dir": str(tmp_path / "output")},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    first_pipeline = Pipeline(config_path)
+    guide_path = tmp_path / "output" / "OUTPUT_GUIDE.txt"
+    first_run_id = first_pipeline.run_id
+    first_guide = guide_path.read_text(encoding="utf-8")
+    assert first_run_id in first_guide
+    assert "screening_sheet.xlsx" in first_guide
+    assert "crosstab.xlsx" in first_guide
+
+    guide_path.unlink()
+    guide_path.parent.rmdir()
+    second_pipeline = Pipeline(config_path)
+    second_guide = guide_path.read_text(encoding="utf-8")
+
+    assert second_pipeline.run_id != first_run_id
+    assert second_pipeline.run_id in second_guide
+    assert guide_path.exists()
 
 
 def test_config_hash_tracks_token_usage_but_redacts_credentials():
@@ -428,6 +650,76 @@ def test_semantic_scholar_search_requests_only_parsed_fields():
     ]
 
 
+def test_search_discards_records_outside_year_range_and_missing_year(tmp_path):
+    config = {
+        "search": {
+            "sources": ["fixture"],
+            "queries": ["LLM security"],
+            "max_results_per_query": 10,
+            "year_from": 2024,
+            "year_to": 2026,
+        },
+        "storage": {
+            "database_file": str(tmp_path / "papers.sqlite"),
+            "cache_dir": str(tmp_path / "cache"),
+        },
+        "export": {"output_dir": str(tmp_path / "output")},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    class FixtureAdapter:
+        def search(self, query, max_results):
+            return [
+                Paper(title="Old paper", year=2023),
+                Paper(title="Current paper", year=2024),
+                Paper(title="Unknown-year paper"),
+                Paper(title="Future paper", year=2027),
+            ]
+
+    pipeline = Pipeline(config_path)
+    with patch("filtertool.search.get_adapter", return_value=FixtureAdapter()):
+        pipeline.run_search()
+
+    papers = pipeline.store.get_all()
+    assert [paper.title for paper in papers] == ["Current paper"]
+    raw_records = [
+        json.loads(line)
+        for line in (tmp_path / "output" / "raw_search_results.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [record["record"]["title"] for record in raw_records] == ["Current paper"]
+    pipeline.store._conn.close()
+
+
+def test_dedup_summary_counts_existing_canonical_records(tmp_path, capsys):
+    config = {
+        "dedup": {"title_fuzzy": {"enabled": False}},
+        "storage": {
+            "database_file": str(tmp_path / "papers.sqlite"),
+            "cache_dir": str(tmp_path / "cache"),
+        },
+        "export": {"output_dir": str(tmp_path / "output")},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    pipeline = Pipeline(config_path)
+    canonical = Paper(title="Canonical paper", status=PaperStatus.SEMANTIC_HIGH.value)
+    duplicate = Paper(
+        title="Duplicate paper",
+        status=PaperStatus.DUPLICATE.value,
+        duplicate_of=canonical.id,
+    )
+    pipeline.store.add_many([canonical, duplicate])
+    pipeline.store.save()
+
+    pipeline.run_dedup()
+
+    assert "[DEDUP DONE] 1 unique, 1 duplicates" in capsys.readouterr().out
+    pipeline.store._conn.close()
+
+
 def test_full_reset_preserves_human_screening_audit(tmp_path):
     config = {
         "storage": {
@@ -476,7 +768,7 @@ def test_verification_retries_respect_retry_after_and_spacing():
 
     with (
         patch("filtertool.verify.requests.get", side_effect=[throttled, success]) as request,
-        patch("filtertool.verify.time.sleep") as sleep,
+        patch("filtertool.rate_limit.time.sleep") as sleep,
     ):
         result = _make_request("https://example.test", 2, 5, 6, 10)
 
@@ -573,3 +865,120 @@ def test_search_adapter_adapts_to_retry_after():
 
     assert result == {"ok": True}
     assert [call.args[0] for call in sleep.call_args_list] == [2.0]
+
+
+def test_search_adapter_retries_429_beyond_transient_retry_limit():
+    adapter = BaseSearchAdapter({
+        "search": {"api": {
+            "retry_attempts": 2,
+            "rate_limit_retry_attempts": 4,
+            "retry_delay_seconds": 1,
+        }}
+    })
+    throttled = type(
+        "Response",
+        (),
+        {
+            "status_code": 429,
+            "headers": {},
+            "raise_for_status": lambda self: None,
+        },
+    )()
+    success = type(
+        "Response",
+        (),
+        {
+            "status_code": 200,
+            "headers": {"Content-Type": "application/json"},
+            "json": lambda self: {"ok": True},
+            "raise_for_status": lambda self: None,
+        },
+    )()
+    with (
+        patch(
+            "filtertool.search.base.requests.get",
+            side_effect=[throttled, throttled, throttled, success],
+        ) as request,
+        patch("filtertool.rate_limit.time.sleep"),
+    ):
+        result = adapter._make_request("https://retry-429-test.example/api")
+
+    assert result == {"ok": True}
+    assert request.call_count == 4
+
+
+def test_run_continues_and_marks_manifest_partial_for_search_warnings(tmp_path, monkeypatch):
+    config = {
+        "protocol_version": "test-v1",
+        "search": {"sources": [], "queries": [], "api": {}},
+        "storage": {
+            "database_file": str(tmp_path / "papers.sqlite"),
+            "cache_dir": str(tmp_path / "cache"),
+        },
+        "export": {"output_dir": str(tmp_path / "output")},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    pipeline = Pipeline(config_path)
+    completed = []
+
+    def partial_search():
+        pipeline.run_warnings.append({
+            "stage": "search",
+            "source": "semantic_scholar",
+            "query": "fixture",
+            "error": "HTTPError: 429",
+            "run_id": pipeline.run_id,
+        })
+        pipeline.last_successful_search_run_id = pipeline.run_id
+
+    monkeypatch.setattr(pipeline, "run_search", partial_search)
+    monkeypatch.setattr(pipeline, "run_normalize", lambda: completed.append("normalize"))
+    monkeypatch.setattr(pipeline, "run_dedup", lambda: completed.append("dedup"))
+    monkeypatch.setattr(pipeline, "run_rule_filter", lambda: completed.append("rule_filter"))
+    monkeypatch.setattr(pipeline, "run_semantic_filter", lambda: completed.append("semantic_filter"))
+    monkeypatch.setattr(
+        pipeline, "run_classification",
+        lambda include_candidates=False: completed.append(
+            f"classification:{include_candidates}"
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline, "run_screening_export",
+        lambda stage="title_abstract": completed.append("screening_export"),
+    )
+    monkeypatch.setattr(pipeline, "run_prisma", lambda run_id=None: completed.append("prisma"))
+    monkeypatch.setattr(pipeline, "run_export", lambda: completed.append("export"))
+
+    pipeline.run_all()
+
+    manifest = json.loads(
+        (tmp_path / "output" / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert completed == [
+        "normalize", "dedup", "rule_filter", "semantic_filter", "classification:True",
+        "screening_export", "prisma", "export",
+    ]
+    assert manifest["status"] == "partial"
+    assert manifest["valid"] is True
+    assert manifest["errors"] == []
+    assert len(manifest["warnings"]) == 1
+    pipeline.store._conn.close()
+
+
+def test_prisma_can_use_successful_events_from_partial_search_run():
+    events = [
+        {"run_id": "partial", "activity": "search", "n_returned": 0, "error": "HTTP 429"},
+        {"run_id": "partial", "activity": "search", "n_returned": 12, "error": ""},
+        {"run_id": "other", "activity": "search", "n_returned": 20, "error": ""},
+    ]
+
+    selected = select_search_events(events, "partial", allow_partial=True)
+
+    assert selected == [events[1]]
+    try:
+        select_search_events(events, "partial")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("partial search events must require explicit opt-in")

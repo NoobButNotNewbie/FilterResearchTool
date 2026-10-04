@@ -1,5 +1,7 @@
 from filtertool.models import Paper, PaperStatus
+
 from .taxonomy import Taxonomy
+
 
 def classify_papers(
     papers: list[Paper], config: dict, include_candidates: bool = False

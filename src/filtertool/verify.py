@@ -1,13 +1,11 @@
-import time
 import logging
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
-from typing import Dict, Any, List
+
 import requests
 from rapidfuzz import fuzz
+from requests.exceptions import RequestException
 
-from filtertool.models import Paper, PaperStatus, Source
-from filtertool.normalize import normalize_doi, normalize_title, normalize_author
+from filtertool.models import Paper, PaperStatus
+from filtertool.normalize import normalize_author, normalize_doi, normalize_title
 from filtertool.rate_limit import get_rate_limiter, parse_retry_after
 from filtertool.search.base import get_semantic_scholar_api_key
 
@@ -57,7 +55,7 @@ def verify_papers(papers: list[Paper], config: dict) -> list[Paper]:
                     all_errors = False
                     result["error"] = "Not found"
 
-            except Exception as e:
+            except (RequestException, ValueError, KeyError, TypeError, IndexError, AttributeError) as e:
                 result["error"] = str(e)
 
             paper.verification_results[source] = result

@@ -1,5 +1,6 @@
 from filtertool.models import Paper, Source
-from filtertool.normalize import normalize_title, normalize_doi, normalize_author_list
+from filtertool.normalize import normalize_author_list, normalize_doi, normalize_title
+
 from .base import BaseSearchAdapter
 
 

@@ -1,218 +1,218 @@
-FILTERTOOL - HUONG DAN CAC FILE
+FILTERTOOL - HƯỚNG DẪN CÁC FILE
 ================================
 
-File nay tom tat chuc nang va tinh chat thong tin trong cac file cua du an.
-Du lieu trong data/ va output/ la du lieu runtime; cac file co the thay doi
-sau khi chay pipeline.
+File này tóm tắt chức năng và tính chất thông tin trong các file của dự án.
+Dữ liệu trong data/ và output/ là dữ liệu runtime; các file có thể thay đổi
+sau khi chạy pipeline.
 
-1. FILE O THU MUC GOC
+1. FILE Ở THƯ MỤC GỐC
 ---------------------
 
 README.md
-  Huong dan muc dich, cai dat, lenh CLI va cac file dau ra. Thong tin mang
-  tinh huong dan su dung, khong phai du lieu paper.
+  Hướng dẫn mục đích, cài đặt, lệnh CLI và các file đầu ra. Thông tin mang
+  tính hướng dẫn sử dụng, không phải dữ liệu paper.
 
-  Tao hai bang cheo tu manual codes: Optimization Technique x Attack Method va
-  Optimization Technique x Objective; dem k/N theo hang, cot va tong. O thua
-  chi la candidate sparse cell, khong phai research gap da xac nhan.
-  Chua tham so va tu khoa do nguoi dung chon; khong chua ket qua paper.
+  Tạo hai bảng chéo từ manual codes: Optimization Technique × Attack Method và
+  Optimization Technique × Objective; đếm k/N theo hàng, cột và tổng. Ô thừa
+  chỉ là candidate sparse cell, không phải research gap đã xác nhận.
+  Chứa tham số và từ khóa do người dùng chọn; không chứa kết quả paper.
 
-  Mo rong references/cited-by tu paper da duoc nguoi Include; luu seed, huong,
-  paper moi/da co va loi API de truy vet snowballing.
-  cau hinh build. La thong tin cau truc/build cua phan mem.
+  Mở rộng references/cited-by từ paper đã được người Include; lưu seed, hướng,
+  paper mới/đã có và lỗi API để truy vết snowballing.
+  Cấu hình build. Là thông tin cấu trúc/build của phần mềm.
 
-  Tao auto taxonomy suggestions chi cho paper da human-include; khong tu quyet
-  dinh inclusion va khong ghi de manual codes.
-  Tai lieu nay: mo ta vai tro va loai thong tin cua cac file trong du an.
+  Tạo auto taxonomy suggestions chỉ cho paper đã human-include; không tự quyết
+  định inclusion và không ghi đè manual codes.
+  Tài liệu này: mô tả vai trò và loại thông tin của các file trong dự án.
 
-  Nap task, attack-stage, optimization-technique va optimization-objective
-  dimensions; tao nhan goi y, bao gom none_detected/other_improvement.
----------------------------
+  Nạp task, attack-stage, optimization-technique và optimization-objective
+  dimensions; tạo nhãn gợi ý, bao gồm none_detected/other_improvement.
 
-  Yeu cau it nhat mot LLM/agent term va mot offensive-security term. Khong dat
-  rule hoac khop noise exclusion thi dua vao human review, khong auto-exclude.
-  Danh dau package filtertool va thong tin package co ban.
+  Yêu cầu ít nhất một LLM/agent term và một offensive-security term. Không đạt
+  rule hoặc khớp noise exclusion thì đưa vào human review, không auto-exclude.
+  Đánh dấu package filtertool và thông tin package cơ bản.
 
-  Doi chieu metadata voi API de tham khao; verification khong thay the human
-  screening va khong tu quyet dinh inclusion.
+  Đối chiếu metadata với API để tham khảo; verification không thay thế human
+  screening và không tự quyết định inclusion.
 
- screening.py
-  Xuat/import screening workbook CSV/XLSX; validate Include/Exclude/Unsure,
-  stage, reason code va luu audit event theo title/abstract hoac full text.
+screening.py
+  Xuất/import screening workbook CSV/XLSX; validate Include/Exclude/Unsure,
+  stage, reason code và lưu audit event theo title/abstract hoặc full text.
 
- coding.py
-  Import manual taxonomy codes cho paper human-included va tinh auto/manual
-  exact agreement, kappa; day khong phai inter-rater reliability.
+coding.py
+  Import manual taxonomy codes cho paper human-included và tính auto/manual
+  exact agreement, kappa; đây không phải inter-rater reliability.
 
- prisma.py
-  Tao PRISMA-style flow counts tu paper records, search log va human audit.
-  Export counts theo source, stage va exclusion reason ra CSV/JSON.
+prisma.py
+  Tạo PRISMA-style flow counts từ paper records, search log và human audit.
+  Export counts theo source, stage và exclusion reason ra CSV/JSON.
 
- provenance.py
-  Tao config hash da redact credential va ghi append-only search log.
+provenance.py
+  Tạo config hash đã redact credential và ghi append-only search log.
 
 Raw search records
-  output/raw_search_results.jsonl luu tung Paper record da chuan hoa tu adapter,
-  kem source/query/run id truoc dedup va filtering. Khong phai raw HTTP response.
-  hay du lieu nghien cuu.
+  output/raw_search_results.jsonl lưu từng Paper record đã chuẩn hóa từ
+  adapter, kèm source/query/run id trước dedup và filtering. Không phải raw
+  HTTP response hay dữ liệu nghiên cứu.
 
-  Danh sach day du paper o dang JSON. Moi ban ghi co metadata, status, human
-  decision, screening audit, auto/manual coding va citation provenance.
-  cac o thua co the goi y khoang trong nghien cuu. Xu ly du lieu phan tich.
+  Danh sách đầy đủ paper ở dạng JSON. Mỗi bản ghi có metadata, status, human
+  decision, screening audit, auto/manual coding và citation provenance.
+  Các ô thừa có thể gợi ý khoảng trống trong nghiên cứu. Xử lý dữ liệu phân tích.
 
- output/screening_sheet.xlsx / fulltext_screening_sheet.xlsx
-  Workbook cho human screening; co cot decision/reason code/reviewer/date.
+output/screening_sheet.xlsx / fulltext_screening_sheet.xlsx
+  Workbook cho human screening; có cột decision/reason code/reviewer/date.
 
- output/classified_papers.xlsx
-  Coding workbook chi cho paper human-included; cot auto suggestions tach khoi
-  manual codes, baseline_compared va measured.
-  Mo rong tap paper qua references va cited-by. Xu ly metadata paper lay tu
-  cac API trich dan.
-  Workbook tu manual codes: hai cross-tab, candidate sparse cells va sheet
-  Validation Search cho researcher ghi cach kiem tra cell thua.
+output/classified_papers.xlsx
+  Coding workbook chỉ cho paper human-included; cột auto suggestions tách khỏi
+  manual codes, baseline_compared và measured.
+  Mở rộng tập paper qua references và cited-by. Xử lý metadata paper lấy từ
+  các API trích dẫn.
+  Workbook từ manual codes: hai cross-tab, candidate sparse cells và sheet
+  Validation Search cho researcher ghi cách kiểm tra cell thừa.
 
- output/search_log.csv / run_manifest.json
-  Protocol/config hash, source/query, cache use, result counts, errors, tool/model
-  version va trang thai valid/invalid cua moi lan chay.
+output/search_log.csv / run_manifest.json
+  Protocol/config hash, source/query, cache use, result counts, errors,
+  tool/model version và trạng thái valid/invalid của mỗi lần chạy.
 
 output/raw_search_results.jsonl
-  Source records truoc cac buoc dedup/rule/semantic; dung de doi chieu thu thap.
+  Source records trước các bước dedup/rule/semantic; dùng để đối chiếu thu thập.
 
- output/prisma_counts.csv / prisma_counts.json
-  So lieu flow theo nguon, duplicate, screening decision, exclusion reason va
-  snowballing seed/direction; khong tu ket luan PRISMA da hoan tat.
-  Khai bao lenh command-line: chay pipeline, xem trang thai, export, reset va
-  import CSV. La lop giao tiep, khong phai noi luu du lieu chinh.
+output/prisma_counts.csv / prisma_counts.json
+  Số liệu flow theo nguồn, duplicate, screening decision, exclusion reason và
+  snowballing seed/direction; không tự kết luận PRISMA đã hoàn tất.
+  Khai báo lệnh command-line: chạy pipeline, xem trạng thái, export, reset và
+  import CSV. Là lớp giao tiếp, không phải nơi lưu dữ liệu chính.
 
 config.py
-  Doc va truy cap cau hinh YAML. Xu ly tham so cau hinh.
+  Đọc và truy cập cấu hình YAML. Xử lý tham số cấu hình.
 
 dedup.py
-  Phat hien paper trung lap dua tren DOI va tieu de. Xu ly metadata dinh danh.
+  Phát hiện paper trùng lặp dựa trên DOI và tiêu đề. Xử lý metadata định danh.
 
 export.py
-  Xuat danh sach paper sang JSON va workbook Excel cho phan loai/phan tich;
-  dinh dang cot, lien ket, bang cheo va sheet Candidate Gaps.
+  Xuất danh sách paper sang JSON và workbook Excel cho phân loại/phân tích;
+  định dạng cột, liên kết, bảng chéo và sheet Candidate Gaps.
 
 models.py
-  Dinh nghia Paper, PaperStatus, Source va ban ghi quyet dinh sang loc. Mo ta
-  cau truc metadata va lich su xu ly cua mot paper.
+  Định nghĩa Paper, PaperStatus, Source và bản ghi quyết định sàng lọc. Mô tả
+  cấu trúc metadata và lịch sử xử lý của một paper.
 
 normalize.py
-  Chuan hoa DOI, tieu de va ten tac gia de tim kiem/doi chieu.
+  Chuẩn hóa DOI, tiêu đề và tên tác giả để tìm kiếm/đối chiếu.
 
 pipeline.py
-  Dieu phoi cac buoc tim kiem, chuan hoa, loc, kiem chung, phan loai, phan tich
-  va xuat. Ket hop du lieu tu cac module.
+  Điều phối các bước tìm kiếm, chuẩn hóa, lọc, kiểm chứng, phân loại, phân
+  tích và xuất. Kết hợp dữ liệu từ các module.
 
 storage.py
-  Luu paper va cache API trong SQLite; cung cap tra cuu theo ID, DOI, tieu de
-  va trang thai. Payload paper la JSON ben trong database.
+  Lưu paper và cache API trong SQLite; cung cấp tra cứu theo ID, DOI, tiêu đề
+  và trạng thái. Payload paper là JSON bên trong database.
 
 verify.py
-  Doi chieu metadata paper voi cac nguon API. Tao ket qua khop/lechs/loi theo
-  tung nguon de lam dau vet kiem chung.
+  Đối chiếu metadata paper với các nguồn API. Tạo kết quả khớp/lệch/lỗi theo
+  từng nguồn để làm dấu vết kiểm chứng.
 
 classify/__init__.py
-  Danh dau package con phan loai.
+  Đánh dấu package con phân loại.
 
 classify/classifier.py
-  Ap dung taxonomy len paper va cap nhat nhan phan loai.
+  Áp dụng taxonomy lên paper và cập nhật nhãn phân loại.
 
 classify/taxonomy.py
-  Nap cac nhom taxonomy va tu khoa; phan loai van ban thanh nhieu nhan.
+  Nạp các nhóm taxonomy và từ khóa; phân loại văn bản thành nhiều nhãn.
 
 filter/__init__.py
-  Danh dau package con loc paper.
+  Đánh dấu package con lọc paper.
 
 filter/rule_filter.py
-  Loc theo tu khoa bao gom/loai tru; tao ket qua va ly do sang loc.
+  Lọc theo từ khóa bao gồm/loại trừ; tạo kết quả và lý do sàng lọc.
 
 filter/semantic_filter.py
-  Cham diem tuong dong ngu nghia bang sentence-transformers va gan nhan HIGH,
-  REVIEW hoac LOW.
+  Chấm điểm tương đồng ngữ nghĩa bằng sentence-transformers và gán nhãn
+  HIGH, REVIEW hoặc LOW.
 
 search/__init__.py
-  Danh dau package con tim kiem.
+  Đánh dấu package con tìm kiếm.
 
 search/base.py
-  Lop nen cho adapter API, request HTTP va cach doc response.
+  Lớp nền cho adapter API, request HTTP và cách đọc response.
 
 search/arxiv.py
-  Tim paper tren arXiv va chuyen response thanh metadata Paper.
+  Tìm paper trên arXiv và chuyển response thành metadata Paper.
 
 search/crossref.py
-  Tim paper qua Crossref va chuyen response thanh metadata Paper.
+  Tìm paper qua Crossref và chuyển response thành metadata Paper.
 
 search/openalex.py
-  Tim paper qua OpenAlex va chuyen response thanh metadata Paper.
+  Tìm paper qua OpenAlex và chuyển response thành metadata Paper.
 
 search/semantic_scholar.py
-  Tim/tra cuu paper, references va cited-by qua Semantic Scholar.
+  Tìm/tra cứu paper, references và cited-by qua Semantic Scholar.
 
-3. DU LIEU RUNTIME
+3. DỮ LIỆU RUNTIME
 ------------------
 
 data/papers.sqlite3
-  Database SQLite chinh: metadata va payload JSON cua paper, trang thai xu ly,
-  cung cache response API. Day la nguon du lieu co the tiep tuc chay pipeline.
+  Database SQLite chính: metadata và payload JSON của paper, trạng thái xử lý,
+  cùng cache response API. Đây là nguồn dữ liệu có thể tiếp tục chạy pipeline.
 
 data/cache/
-  Thu muc cache response API theo file JSON, co the con lai tu cac phien ban cu.
-  Noi dung la response ky thuat, khong phai bao cao tong hop.
+  Thư mục cache response API theo file JSON, có thể còn lại từ các phiên bản cũ.
+  Nội dung là response kỹ thuật, không phải báo cáo tổng hợp.
 
 output/all_papers.json
-  Danh sach day du paper o dang JSON. Moi ban ghi co metadata, nguon, trang
-  thai, diem/ket qua loc, kiem chung, nhan phan loai va lich su xu ly.
+  Danh sách đầy đủ paper ở dạng JSON. Mỗi bản ghi có metadata, nguồn, trạng
+  thái, điểm/kết quả lọc, kiểm chứng, nhãn phân loại và lịch sử xử lý.
 
 output/auto_suggestions.xlsx
-  Taxonomy suggestions cho candidate; khong doi status review va khong phai
+  Taxonomy suggestions cho candidate; không đổi status review và không phải
   final inclusion.
 
 output/classified_papers.xlsx
-  Coding workbook cho paper human-included; auto suggestions tach khoi manual codes.
+  Coding workbook cho paper human-included; auto suggestions tách khỏi
+  manual codes.
 
 output/crosstab.xlsx
-  Workbook phan tich: sheet CrossTab la bang cheo va danh dau o thua; sheet
-  Candidate Gaps liet ke method, technique, k/N, ty le va ID paper lien quan.
+  Workbook phân tích: sheet CrossTab là bảng chéo và đánh dấu ô thừa; sheet
+  Candidate Gaps liệt kê method, technique, k/N, tỷ lệ và ID paper liên quan.
 
-4. FILE DAU RA CU
------------------
+4. FILE ĐẦU RA CŨ
+------------------
 
-Neu cac file sau van con trong output/, do la ket qua tu phien ban export cu.
-Pipeline moi khong cap nhat/tai tao chung:
+Nếu các file sau vẫn còn trong output/, đó là kết quả từ phiên bản export cũ.
+Pipeline mới không cập nhật/tái tạo chúng:
 
 output/all_papers.xlsx
-  Ban Excel cu cua toan bo danh sach paper; noi dung trung lap voi
+  Bản Excel cũ của toàn bộ danh sách paper; nội dung trùng lặp với
   output/all_papers.json.
 
 output/filtered_papers.xlsx
-  Ban Excel cu cua danh sach paper qua loc; la mot tap con theo trang thai.
+  Bản Excel cũ của danh sách paper qua lọc; là một tập con theo trạng thái.
 
 output/candidate_gaps.json
-  Ban JSON cu cua danh sach gap; thong tin nay hien duoc dat trong sheet
-  Candidate Gaps cua output/crosstab.xlsx.
+  Bản JSON cũ của danh sách gap; thông tin này hiện được đặt trong sheet
+  Candidate Gaps của output/crosstab.xlsx.
 
-5. METADATA GOI DA BUILD
+5. METADATA GÓI ĐÃ BUILD
 ------------------------
 
 src/filtertool.egg-info/PKG-INFO
-  Metadata goi da tao khi build/install, gom mo ta va requirements.
+  Metadata gói đã tạo khi build/install, gồm mô tả và requirements.
 
 src/filtertool.egg-info/entry_points.txt
-  Mapping lenh filtertool toi ham CLI.
+  Mapping lệnh filtertool tới hàm CLI.
 
 src/filtertool.egg-info/dependency_links.txt
-  Metadata lien ket dependency cua goi da build.
+  Metadata liên kết dependency của gói đã build.
 
 src/filtertool.egg-info/requires.txt
-  Danh sach dependencies va tuy chon dev cua goi da build.
+  Danh sách dependencies và tùy chọn dev của gói đã build.
 
 src/filtertool.egg-info/SOURCES.txt
-  Danh sach file duoc dong goi khi build.
+  Danh sách file được đóng gói khi build.
 
 src/filtertool.egg-info/top_level.txt
-  Ten package cap cao duoc dong goi.
+  Tên package cấp cao được đóng gói.
 
-Thu muc *.egg-info la metadata phat sinh tu qua trinh build/install; co the
-duoc tao lai va khong chua du lieu nghien cuu.
+Thư mục *.egg-info là metadata phát sinh từ quá trình build/install; có thể
+được tạo lại và không chứa dữ liệu nghiên cứu.

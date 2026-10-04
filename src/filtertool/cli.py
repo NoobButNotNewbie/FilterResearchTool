@@ -11,14 +11,12 @@ Usage:
 from __future__ import annotations
 
 import click
-from pathlib import Path
 
 
 @click.group()
 @click.version_option(version="0.1.0", prog_name="FilterTool")
 def cli():
     """FilterTool — Local literature screening & research mapping pipeline."""
-    pass
 
 
 @cli.command()
@@ -102,7 +100,10 @@ def import_screening(config: str, screening_file: str):
         pipeline.run_screening_export("full_text")
     pipeline.run_classification()
     pipeline.run_analysis()
-    pipeline.run_prisma()
+    if pipeline.last_successful_search_run_id:
+        pipeline.run_prisma()
+    else:
+        click.echo("[PRISMA SKIPPED] No successful search run is recorded; counts were not generated.")
     pipeline.run_export()
     pipeline.write_run_manifest()
 
@@ -145,6 +146,7 @@ def prisma(config: str, run_id: str | None):
 def agreement(config: str):
     """Compare automatic suggestions with one manual coder (not inter-rater reliability)."""
     import json
+
     from filtertool.coding import auto_manual_agreement
     from filtertool.pipeline import Pipeline
 
@@ -202,9 +204,9 @@ def export(config: str):
 @click.confirmation_option(prompt="This will reset paper statuses. Continue?")
 def reset(config: str, stage: str | None):
     """Reset paper statuses to allow re-running stages."""
-    from filtertool.config import load_config, get_nested
-    from filtertool.storage import PaperStore
+    from filtertool.config import get_nested, load_config
     from filtertool.models import PaperStatus
+    from filtertool.storage import PaperStore
 
     cfg = load_config(config)
     store = PaperStore(
@@ -279,10 +281,11 @@ def reset(config: str, stage: str | None):
 def import_csv(config: str, csv_path: str):
     """Import papers from a CSV file (must have 'title' column, optional: doi, authors, year, abstract, url)."""
     import csv
-    from filtertool.config import load_config, get_nested
-    from filtertool.storage import PaperStore
+
+    from filtertool.config import get_nested, load_config
     from filtertool.models import Paper, Source
     from filtertool.normalize import normalize_doi, normalize_title
+    from filtertool.storage import PaperStore
 
     cfg = load_config(config)
     store = PaperStore(

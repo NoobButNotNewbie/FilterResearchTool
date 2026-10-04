@@ -1,6 +1,7 @@
 import logging
-from typing import List
+
 import requests
+from requests.exceptions import RequestException
 
 from filtertool.models import Paper, PaperStatus, Source
 from filtertool.normalize import normalize_doi, normalize_title
@@ -146,7 +147,9 @@ def _fetch_papers(url: str, paper_key: str, timeout: int, retries: int,
                 )
                 papers.append(paper)
             return papers, len(items), ""
-        except Exception as error:
+        except (
+            RequestException, ValueError, KeyError, TypeError, IndexError, AttributeError,
+        ) as error:
             if attempt + 1 < retries:
                 response = getattr(error, "response", None)
                 retry_after = parse_retry_after(

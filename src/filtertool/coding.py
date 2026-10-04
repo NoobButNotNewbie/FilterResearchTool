@@ -7,7 +7,6 @@ from typing import Any
 
 from filtertool.models import Paper, PaperStatus
 
-
 _DIMENSIONS = {
     "attack_methods": "attack_methods",
     "attack_stages": "attack_stages",

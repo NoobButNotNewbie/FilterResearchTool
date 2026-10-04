@@ -7,12 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from filtertool.models import Paper
-
 
 # ---------------------------------------------------------------------------
 # Color scheme for semantic labels
@@ -102,7 +101,6 @@ def _format_verification(results: dict[str, dict]) -> str:
         elif verified:
             parts.append(f"{source}: OK")
         else:
-            matched = r.get("matched_fields", [])
             mismatched = r.get("mismatched_fields", [])
             parts.append(f"{source}: FAIL({','.join(mismatched)})")
     return " | ".join(parts)
@@ -329,5 +327,4 @@ def export_to_json(papers: list[Paper], output_path: str | Path) -> Path:
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     return output_path
-
 

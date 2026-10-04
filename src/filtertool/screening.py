@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import csv
 import re
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.utils import get_column_letter
+from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from filtertool.models import Paper, PaperStatus
-
 
 SCREENING_COLUMNS = [
     "id", "title", "year", "doi", "url", "abstract", "sources",
@@ -28,7 +28,17 @@ _DECISION_LABELS = {
     "exclude": "Exclude",
     "unsure": "Unsure",
 }
-_REASON_CODE = re.compile(r"^(IC|EC)\d+[A-Za-z0-9_.-]*$", re.IGNORECASE)
+_REASON_CODES = {
+    "include": ("IC1", "IC2"),
+    "exclude": ("EC1", "EC2", "EC3"),
+}
+_REASON_CODE_MEANINGS = {
+    "IC1": "LLM/agent directly performs an offensive-security task",
+    "IC2": "LLM/agent assists, enables, or optimizes an offensive-security task",
+    "EC1": "No LLM or AI-agent role",
+    "EC2": "No offensive-security task, or defensive-only use",
+    "EC3": "Other out-of-scope reason; explain briefly in note",
+}
 
 
 def _status_value(status: str | PaperStatus) -> str:
@@ -122,11 +132,58 @@ def export_screening_sheet(
         for column, value in enumerate(values, 1):
             sheet.cell(row_number, column, value)
 
-    decision_validation = DataValidation(type="list", formula1='"Include,Exclude,Unsure"')
+    decision_validation = DataValidation(
+        type="list", formula1='"Include,Exclude,Unsure"',
+        allow_blank=True, errorStyle="stop", showErrorMessage=True,
+    )
     sheet.add_data_validation(decision_validation)
     decision_validation.add(f"M2:M{max(2, len(candidates) + 1)}")
+
+    codebook = workbook.create_sheet("Codebook")
+    codebook.append(["Include codes", "Exclude codes", "Unsure"])
+    for row_number in range(max(len(_REASON_CODES["include"]), len(_REASON_CODES["exclude"]))):
+        codebook.append([
+            _REASON_CODES["include"][row_number]
+            if row_number < len(_REASON_CODES["include"]) else None,
+            _REASON_CODES["exclude"][row_number]
+            if row_number < len(_REASON_CODES["exclude"]) else None,
+            None,
+        ])
+    codebook.append([])
+    codebook.append(["Decision", "Reason code", "Meaning"])
+    for decision, codes in (("Include", _REASON_CODES["include"]), ("Exclude", _REASON_CODES["exclude"])):
+        for code in codes:
+            codebook.append([decision, code, _REASON_CODE_MEANINGS[code]])
+    for cell in codebook[1] + codebook[6]:
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.fill = header_fill
+    codebook.column_dimensions["A"].width = 20
+    codebook.column_dimensions["B"].width = 20
+    codebook.column_dimensions["C"].width = 72
+    workbook.defined_names.add(DefinedName(
+        "IncludeReasonCodes", attr_text="'Codebook'!$A$2:$A$3"
+    ))
+    workbook.defined_names.add(DefinedName(
+        "ExcludeReasonCodes", attr_text="'Codebook'!$B$2:$B$4"
+    ))
+    workbook.defined_names.add(DefinedName(
+        "UnsureReasonCodes", attr_text="'Codebook'!$C$2:$C$2"
+    ))
+    reason_validation = DataValidation(
+        type="list",
+        formula1='=INDIRECT(IF($M2="Include","IncludeReasonCodes",IF($M2="Exclude","ExcludeReasonCodes","UnsureReasonCodes")))',
+        allow_blank=True, errorStyle="stop", showErrorMessage=True,
+        errorTitle="Invalid reason code",
+        error="Choose a reason code from the list for the selected decision.",
+    )
+    sheet.add_data_validation(reason_validation)
+    reason_validation.add(f"N2:N{max(2, len(candidates) + 1)}")
+
     if stage == "full_text":
-        retrieved_validation = DataValidation(type="list", formula1='"yes,no"')
+        retrieved_validation = DataValidation(
+            type="list", formula1='"yes,no"',
+            allow_blank=True, errorStyle="stop", showErrorMessage=True,
+        )
         sheet.add_data_validation(retrieved_validation)
         retrieved_validation.add(f"R2:R{max(2, len(candidates) + 1)}")
 
@@ -180,7 +237,7 @@ def apply_screening_rows(papers: list[Paper], rows: list[dict[str, Any]]) -> int
     for row_number, row in enumerate(rows, 2):
         paper_id = str(row.get("id") or "").strip()
         decision = str(row.get("human_decision") or "").strip().lower()
-        if not paper_id and not decision:
+        if not decision:
             continue
         if not paper_id or paper_id not in by_id:
             raise ValueError(f"row {row_number}: unknown or empty paper id")
@@ -202,11 +259,12 @@ def apply_screening_rows(papers: list[Paper], rows: list[dict[str, Any]]) -> int
         }:
             raise ValueError(f"row {row_number}: full-text decision requires HUMAN_INCLUDED")
 
-        reason_code = str(row.get("reason_code") or "").strip()
-        if decision in {"include", "exclude"}:
-            prefix = "IC" if decision == "include" else "EC"
-            if not _REASON_CODE.fullmatch(reason_code) or not reason_code.upper().startswith(prefix):
-                raise ValueError(f"row {row_number}: {decision} requires a {prefix} reason code")
+        reason_code = str(row.get("reason_code") or "").strip().upper()
+        if decision in {"include", "exclude"} and reason_code not in _REASON_CODES[decision]:
+            options = ", ".join(_REASON_CODES[decision])
+            raise ValueError(
+                f"row {row_number}: {decision} reason_code must be one of: {options}"
+            )
 
         retrieved = str(row.get("fulltext_retrieved") or "").strip().lower()
         if stage == "full_text" and retrieved not in {"yes", "no"}:
@@ -214,6 +272,14 @@ def apply_screening_rows(papers: list[Paper], rows: list[dict[str, Any]]) -> int
         prepared.append((paper, row, stage, decision, reason_code, retrieved))
 
     for paper, row, stage, decision, reason_code, retrieved in prepared:
+        human_decision = (
+            "Not Retrieved" if stage == "full_text" and retrieved == "no"
+            else _DECISION_LABELS[decision]
+        )
+        decision_or_reason_changed = (
+            paper.human_decision != human_decision
+            or (paper.reason_code or "") != reason_code
+        )
         if stage == "title_abstract":
             status_by_decision = {
                 "include": PaperStatus.HUMAN_INCLUDED,
@@ -233,11 +299,12 @@ def apply_screening_rows(papers: list[Paper], rows: list[dict[str, Any]]) -> int
 
         paper.status = new_status.value
         paper.screening_stage = stage
-        paper.human_decision = "Not Retrieved" if stage == "full_text" and retrieved == "no" else _DECISION_LABELS[decision]
+        paper.human_decision = human_decision
         paper.reason_code = reason_code or None
         paper.screening_note = str(row.get("note") or "").strip() or None
         paper.reviewer = str(row.get("reviewer") or "").strip() or None
-        paper.review_date = str(row.get("date") or date.today().isoformat()).strip()
+        if decision_or_reason_changed or not paper.review_date:
+            paper.review_date = datetime.now().astimezone().date().isoformat()
         decision_value = "not_retrieved" if stage == "full_text" and retrieved == "no" else decision
         details = reason_code
         note = paper.screening_note

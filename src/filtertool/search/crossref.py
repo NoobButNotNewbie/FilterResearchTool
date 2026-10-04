@@ -1,6 +1,10 @@
+from requests.exceptions import RequestException
+
 from filtertool.models import Paper, Source
-from filtertool.normalize import normalize_title, normalize_doi, normalize_author_list
+from filtertool.normalize import normalize_author_list, normalize_doi, normalize_title
+
 from .base import BaseSearchAdapter, get_contact_email
+
 
 class CrossrefAdapter(BaseSearchAdapter):
     BASE_URL = "https://api.crossref.org/works"
@@ -98,6 +102,6 @@ class CrossrefAdapter(BaseSearchAdapter):
             data = self._make_request(url, params=params)
             if data and "message" in data:
                 return self._parse_paper(data["message"])
-        except Exception:
+        except (RequestException, ValueError, KeyError, TypeError, IndexError, AttributeError):
             return None
         return None

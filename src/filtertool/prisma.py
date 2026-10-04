@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import csv
+import json
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +22,9 @@ def _latest_decision(paper: Paper, stage: str) -> dict[str, Any] | None:
 
 
 def select_search_events(
-    events: list[dict[str, Any]], run_id: str | None
+    events: list[dict[str, Any]], run_id: str | None, allow_partial: bool = False
 ) -> list[dict[str, Any]]:
-    """Select exactly one successful search run; never include pilot activity."""
+    """Select search events, optionally excluding failed requests from a partial run."""
     if not run_id:
         raise ValueError("No valid search run is recorded; run collect before exporting PRISMA counts")
     selected = [
@@ -33,7 +33,14 @@ def select_search_events(
     ]
     if not selected:
         raise ValueError(f"Search run {run_id!r} has no search-log events")
-    if any(str(event.get("error") or "").strip() for event in selected):
+    if allow_partial:
+        selected = [
+            event for event in selected
+            if not str(event.get("error") or "").strip()
+        ]
+        if not selected:
+            raise ValueError(f"Search run {run_id!r} has no successful search events")
+    elif any(str(event.get("error") or "").strip() for event in selected):
         raise ValueError(f"Search run {run_id!r} contains failed requests and is not valid for PRISMA")
     return selected
 

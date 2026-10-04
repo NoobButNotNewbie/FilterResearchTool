@@ -10,8 +10,9 @@ Source code is licensed under MIT (see [LICENSE](LICENSE)). Use of the Semantic 
 - **Deduplication**: Xóa trùng lặp dựa trên DOI và fuzzy matching Title.
 - **Rule-based Filter**: Candidate phải khớp ít nhất một LLM/agent term và một offensive-security term; các trường hợp còn lại được giữ cho human review, không bị loại tự động.
 - **Semantic Filter**: Sentence Transformers chỉ ưu tiên review; semantic score không phải quyết định include/exclude.
+- **Rescreen on collection**: Mỗi lần search, rule filter, semantic score và taxonomy được tính lại cho toàn bộ record chưa có quyết định human; duplicate và human decisions được giữ nguyên.
 - **Human Screening**: Xuất title/abstract và full-text workbook; import Include/Exclude/Unsure cùng reason code.
-- **Manual Coding**: Auto labels là gợi ý riêng. Analysis chỉ dùng paper được người duyệt include và manual codes.
+- **Research Areas**: Auto labels gợi ý tác vụ/phương thức tấn công, giai đoạn tấn công, kỹ thuật tối ưu và mục tiêu đo lường (success, cost/token, speed/steps, robustness, generalization). Analysis chỉ dùng paper được người duyệt include và manual codes.
 - **PRISMA/Provenance**: Ghi search log theo source/query/cache/config, run manifest, flow counts và citation expansion theo seed.
 - **Candidate Sparse Cells**: Cross-tab kỹ thuật tối ưu × tác vụ tấn công và × mục tiêu tối ưu; ô thưa không phải research gap đã xác nhận.
 
@@ -75,7 +76,7 @@ Hoặc dùng shortcut chạy collect rồi prepare-review:
 ```bash
 filtertool run --config config.yaml --no-cache
 ```
-`--no-cache` dùng response trực tiếp từ nguồn và ghi cache_used=false/true vào `search_log.csv`. Lỗi truy vấn làm run manifest đánh dấu invalid; kiểm tra manifest trước khi dùng số liệu.
+`--no-cache` dùng response trực tiếp từ nguồn và ghi cache_used=false/true vào `search_log.csv`. HTTP 429 được retry riêng theo `rate_limit_retry_attempts`; nếu một truy vấn vẫn thất bại, pipeline tiếp tục các nguồn/stage còn lại và manifest ghi `partial` cùng cảnh báo. Kiểm tra `run_manifest.json` và `search_log.csv` trước khi dùng số liệu; lỗi pipeline nghiêm trọng vẫn đánh dấu run `invalid`.
 
 ### 2. Human screening
 Full run tạo `screening_sheet.xlsx`. Điền `human_decision` (Include/Exclude/Unsure) và reason code IC*/EC*, rồi import:
@@ -83,6 +84,8 @@ Full run tạo `screening_sheet.xlsx`. Điền `human_decision` (Include/Exclude
 filtertool import-screening --config config.yaml output/offensive_security/screening_sheet.xlsx
 ```
 Lệnh import tạo `fulltext_screening_sheet.xlsx` cho paper Include ở vòng title/abstract. Điền quyết định full-text và `fulltext_retrieved` (yes/no), rồi import workbook này.
+
+Workbook có dropdown cho quyết định và reason code; tab `Codebook` giải thích các mã cố định: `IC1` (agent trực tiếp thực hiện tác vụ offensive security), `IC2` (agent hỗ trợ/tối ưu tác vụ), `EC1` (không có vai trò LLM/agent), `EC2` (không có tác vụ offensive security hoặc chỉ phòng thủ), `EC3` (lý do ngoài phạm vi khác; ghi rõ trong `note`). Importer bỏ qua dòng chưa có quyết định và từ chối reason code ngoài danh sách. Cột `date` được đóng dấu ngày import khi quyết định hoặc reason code thay đổi; import lại nội dung không đổi sẽ giữ nguyên ngày. Excel `.xlsx` không tự đóng dấu thời điểm ngay lúc gõ.
 
 ### 3. Manual coding
 `classified_papers.xlsx` tách cột auto/manual. Chỉ paper đã human-include xuất hiện. Điền các cột `*_manual`, `baseline_compared`, `measured` rồi import:
@@ -126,7 +129,8 @@ Các bước hợp lệ: `search`, `normalize`, `dedup`, `rule_filter`, `semanti
 
 ## Kết quả xuất ra
 Nằm trong thư mục `output/` (hoặc đường dẫn bạn cấu hình trong yaml):
-- `search_log.csv` và `run_manifest.json`: provenance, cache, lỗi, hash cấu hình và trạng thái run.
+- `OUTPUT_GUIDE.txt`: tự động tạo mới mỗi lần chạy lệnh FilterTool có khởi tạo pipeline; mô tả chức năng của từng loại file output.
+- `search_log.csv` và `run_manifest.json`: provenance, cache, lỗi/cảnh báo, hash cấu hình và trạng thái run (`complete`, `partial` hoặc `invalid`).
 - `raw_search_results.jsonl`: các source records đã chuẩn hóa trước dedup/filter.
 - `screening_sheet.xlsx` / `fulltext_screening_sheet.xlsx`: quyết định human cùng reason codes.
 - `auto_suggestions.xlsx`: taxonomy gợi ý cho toàn bộ candidate; không phải human decision hay final inclusion.

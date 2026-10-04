@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 
 from unidecode import unidecode
-
 
 # ---------------------------------------------------------------------------
 # DOI normalization

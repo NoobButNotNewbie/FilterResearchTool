@@ -1,7 +1,8 @@
-from typing import List
+
 from ..models import Paper, PaperStatus
 
-def apply_rule_filter(papers: List[Paper], config: dict) -> List[Paper]:
+
+def apply_rule_filter(papers: list[Paper], config: dict) -> list[Paper]:
     """
     Applies keyword-based inclusion and exclusion rules to papers.
     Updates paper status and records screening decisions.
@@ -21,9 +22,6 @@ def apply_rule_filter(papers: List[Paper], config: dict) -> List[Paper]:
     if llm_terms and offensive_terms:
         inclusion_keywords = list(dict.fromkeys(llm_terms + offensive_terms))
     exclusion_keywords = [k.lower() for k in rule_config.get("exclusion_keywords", [])]
-    # default to multi_pass if not explicitly defined
-    multi_pass = rule_config.get("multi_pass", True)
-    
     for paper in papers:
         if any(
             decision.get("stage") == "human_screening:title_abstract"
@@ -41,6 +39,12 @@ def apply_rule_filter(papers: List[Paper], config: dict) -> List[Paper]:
             PaperStatus.REVIEW_NEEDED,
             PaperStatus.RULE_INCLUDED,
             PaperStatus.RULE_EXCLUDED,
+            PaperStatus.SEMANTIC_HIGH,
+            PaperStatus.SEMANTIC_REVIEW,
+            PaperStatus.SEMANTIC_LOW,
+            PaperStatus.VERIFIED,
+            PaperStatus.UNVERIFIED,
+            PaperStatus.VERIFY_ERROR,
         }
         if paper.status not in eligible_statuses and not was_keyword_excluded:
             continue
