@@ -18,6 +18,7 @@ Papers are NEVER deleted — only status changes.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import platform
 import time
@@ -25,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from requests.exceptions import RequestException
+from requests.exceptions import HTTPError, RequestException
 
 from filtertool.config import get_nested, load_config
 from filtertool.models import Paper, PaperStatus
@@ -47,11 +48,15 @@ class Pipeline:
         self.run_id = uuid.uuid4().hex
         self.started_at = utc_timestamp()
         self.config_hash = config_hash(self.config)
+        self.search_config_hash = config_hash(
+            {"search": self.config.get("search", {})}
+        )
         self.protocol_version = str(self.config.get("protocol_version", "unspecified"))
         self.run_errors: list[dict[str, str]] = []
         self.run_warnings: list[dict[str, str]] = []
         self.stages_completed: list[str] = []
         self.snowballing_log: list[dict[str, Any]] = []
+        self.search_snapshots: list[dict[str, Any]] = []
         self.last_successful_search_run_id: str | None = None
         db_path = get_nested(self.config, "storage", "database_file", default="./data/papers.json")
         cache_dir = get_nested(self.config, "storage", "cache_dir", default="./data/cache")
@@ -138,6 +143,17 @@ search_log.csv
 raw_search_results.jsonl
   Metadata paper đã chuẩn hóa nhận từ các nguồn, trước dedup và filter.
   Mỗi dòng là một record kèm run ID, nguồn, query và thông tin cache.
+
+search_query_summary.xlsx
+  Một dòng cho mỗi query: keyword tạo query, keyword lọc, số kết quả theo source,
+  tổng record, số research duy nhất theo tiêu chí A/B, lỗi và fingerprint kết quả.
+
+search_query_research.xlsx
+  Tối đa 20 research cho mỗi query, ưu tiên bài đáp ứng cả A và B, sau đó cân bằng
+  A-only/B-only; danh sách lấy từ kết quả query và xếp theo keyword liên quan.
+  Nhãn A/B chỉ mô tả keyword evidence trên title/abstract, không loại bài khỏi
+  report. Đã gộp trùng giữa sources và ghi title, DOI, URL, abstract, source,
+  query và run ID.
 
 screening_sheet.xlsx
   Workbook để người nghiên cứu review title/abstract và nhập quyết định,
@@ -232,6 +248,41 @@ OUTPUT_GUIDE.txt
                     "record": paper.to_dict(),
                 }, ensure_ascii=False) + "\n")
 
+    @staticmethod
+    def _search_result_fingerprint(papers: list[Paper]) -> str:
+        fields = (
+            "id", "title", "title_normalized", "authors", "year", "doi",
+            "doi_normalized", "abstract", "url", "venue", "publication_type",
+            "sources", "source_ids",
+        )
+        records = [
+            {field: getattr(paper, field) for field in fields}
+            for paper in papers
+        ]
+        records.sort(
+            key=lambda record: json.dumps(
+                record, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            )
+        )
+        canonical = json.dumps(
+            records, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _current_run_raw_results(self) -> list[dict[str, Any]]:
+        path = self.output_dir / "raw_search_results.jsonl"
+        if not path.exists():
+            return []
+        results = []
+        with path.open("r", encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, 1):
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                if entry.get("run_id") == self.run_id:
+                    results.append(entry)
+        return results
+
     def run_prepare_review(self) -> None:
         """Process already collected local records and export human-review inputs."""
         self.run_normalize()
@@ -268,7 +319,10 @@ OUTPUT_GUIDE.txt
             "python_version": platform.python_version(),
             "protocol_version": self.protocol_version,
             "config_hash": self.config_hash,
+            "research_protocol": self._research_protocol_snapshot(),
+            "search_config_hash": self.search_config_hash,
             "sources": self.config.get("search", {}).get("sources", []),
+            "search_snapshots": self.search_snapshots,
             "semantic_model": self.config.get("semantic_filter", {}).get("model_name"),
             "cache_bypassed": self.no_cache,
             "stages_completed": self.stages_completed,
@@ -281,6 +335,44 @@ OUTPUT_GUIDE.txt
         path = self.output_dir / "run_manifest.json"
         path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
+
+    def _research_protocol_snapshot(self) -> dict[str, Any]:
+        search_config = self.config.get("search", {})
+        research_protocol = self.config.get("research_protocol", {})
+        rule_config = self.config.get("rule_filter", {})
+        semantic_config = self.config.get("semantic_filter", {})
+        return {
+            "question": research_protocol.get("question", ""),
+            "query_design": research_protocol.get("query_design", ""),
+            "query_keyword_groups": research_protocol.get(
+                "query_keyword_groups", {}
+            ),
+            "search": {
+                "sources": search_config.get("sources", []),
+                "queries": search_config.get("queries", []),
+                "max_results_per_query": search_config.get("max_results_per_query"),
+                "year_from": search_config.get("year_from"),
+                "year_to": search_config.get("year_to"),
+            },
+            "focus_dimensions": research_protocol.get("focus_dimensions", {}),
+            "minimum_focus_dimensions": research_protocol.get(
+                "minimum_focus_dimensions", 1
+            ),
+            "max_matched_topic_categories": research_protocol.get(
+                "max_matched_topic_categories"
+            ),
+            "max_research_per_query": research_protocol.get(
+                "max_research_per_query", 20
+            ),
+            "rule_filter": {
+                "llm_terms": rule_config.get("llm_terms", []),
+                "offensive_terms": rule_config.get("offensive_terms", []),
+            },
+            "semantic_reference_sentences": semantic_config.get(
+                "reference_sentences", []
+            ),
+            "taxonomy": self.config.get("taxonomy", {}),
+        }
 
     def run_screening_export(self, stage: str = "title_abstract") -> None:
         from filtertool.screening import export_screening_sheet
@@ -380,12 +472,14 @@ OUTPUT_GUIDE.txt
         from filtertool.search import get_adapter
 
         self.last_successful_search_run_id = None
+        self.search_snapshots = []
         sources = get_nested(self.config, "search", "sources", default=[])
         queries = get_nested(self.config, "search", "queries", default=[])
         max_results = get_nested(self.config, "search", "max_results_per_query", default=100)
 
         total_new = 0
         successful_queries = 0
+        rate_limited_sources: dict[str, str] = {}
         for source_name in sources:
             try:
                 adapter = get_adapter(source_name, self.config)
@@ -397,8 +491,15 @@ OUTPUT_GUIDE.txt
                 continue
 
             for query in queries:
+                cache_fingerprint = config_hash({
+                    "source": source_name,
+                    "query": query,
+                    "max_results_per_query": max_results,
+                    "year_from": self.config.get("search", {}).get("year_from"),
+                    "year_to": self.config.get("search", {}).get("year_to"),
+                })
                 cache_key = self.store.cache_key(
-                    "search", f"{self.config_hash}:{source_name}:{query}"
+                    "search", cache_fingerprint
                 )
                 cache_used = False
                 error = ""
@@ -410,15 +511,29 @@ OUTPUT_GUIDE.txt
                             raise ValueError("cache entry could not be decoded")
                         papers = [Paper.from_dict(item) for item in cached]
                         cache_used = True
+                    elif source_name in rate_limited_sources:
+                        error = (
+                            "Skipped after this source returned HTTP 429 earlier "
+                            f"in this run: {rate_limited_sources[source_name]}"
+                        )
+                        print(f"  [SKIP] {source_name} / '{query}': {error}")
+                        papers = []
                     else:
                         print(f"  [SEARCH] {source_name} / '{query}'")
                         papers = adapter.search(query, max_results=max_results)
                 except _SEARCH_FAILURES as e:
                     error = f"{type(e).__name__}: {e}"
+                    if (
+                        isinstance(e, HTTPError)
+                        and e.response is not None
+                        and e.response.status_code == 429
+                    ):
+                        rate_limited_sources[source_name] = error
                     print(f"  [WARN] {source_name} / '{query}': {error}")
                     self.run_warnings.append({
                         "stage": "search", "source": source_name,
                         "query": query, "error": error, "run_id": self.run_id,
+                        "rate_limited": source_name in rate_limited_sources,
                     })
                     papers = []
                 else:
@@ -429,6 +544,24 @@ OUTPUT_GUIDE.txt
                 rejected_by_year = unfiltered_count - len(papers)
                 if rejected_by_year:
                     print(f"[YEAR FILTER] Excluded {rejected_by_year} records outside the configured year range")
+                papers.sort(
+                    key=lambda paper: (
+                        paper.doi_normalized or "",
+                        paper.title_normalized or "",
+                        paper.year or 0,
+                        paper.id,
+                    )
+                )
+                self.search_snapshots.append({
+                    "source": source_name,
+                    "query": query,
+                    "year_from": self.config.get("search", {}).get("year_from"),
+                    "year_to": self.config.get("search", {}).get("year_to"),
+                    "result_count": len(papers),
+                    "result_set_sha256": self._search_result_fingerprint(papers),
+                    "cache_used": cache_used,
+                    "error": error,
+                })
                 if not error:
                     self.store.set_cache(cache_key, [p.to_dict() for p in papers])
 
@@ -452,6 +585,17 @@ OUTPUT_GUIDE.txt
                 self._record_search(source_name, query, len(papers), added, cache_used, error)
 
         self.store.save()
+        from filtertool.export import export_search_query_reports
+
+        summary_path, research_path = export_search_query_reports(
+            self.config,
+            self.run_id,
+            self.search_snapshots,
+            self._current_run_raw_results(),
+            self.output_dir,
+        )
+        print(f"[SEARCH REPORTS] Query counts: {summary_path}")
+        print(f"[SEARCH REPORTS] Research by query: {research_path}")
         if successful_queries and not self.run_errors:
             self.last_successful_search_run_id = self.run_id
         print(f"\n[SEARCH DONE] {total_new} new papers. Total: {self.store.count()}")
@@ -764,6 +908,7 @@ OUTPUT_GUIDE.txt
         auto_columns = [
             "id", "title", "authors", "year", "doi", "url", "abstract", "sources",
             "publication_type", "status", "semantic_score", "semantic_label", "keyword_hits",
+            "research_focus_hits",
             "attack_methods_auto", "attack_stages_auto", "optimization_techniques_auto",
             "optimization_objectives_auto",
         ]

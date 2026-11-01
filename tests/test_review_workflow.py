@@ -1,16 +1,19 @@
 import json
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import yaml
 from click.testing import CliRunner
 from openpyxl import load_workbook
+from requests import Response
+from requests.exceptions import HTTPError
 
 from filtertool.analysis import build_crosstab
 from filtertool.classify.classifier import classify_papers
 from filtertool.cli import cli
 from filtertool.coding import auto_manual_agreement, import_manual_coding
-from filtertool.export import export_crosstab_to_excel
+from filtertool.export import export_crosstab_to_excel, export_search_query_reports
 from filtertool.filter.rule_filter import apply_rule_filter
 from filtertool.models import Paper, PaperStatus
 from filtertool.pipeline import Pipeline
@@ -26,10 +29,8 @@ from filtertool.verify import _make_request
 
 CONFIG = {
     "rule_filter": {
-        "min_keyword_hits": 2,
         "llm_terms": ["large language model", "LLM", "AI agent"],
         "offensive_terms": ["penetration test", "exploit", "CTF"],
-        "exclusion_keywords": ["protein folding"],
     },
     "taxonomy": {
         "attack_methods": {
@@ -44,23 +45,65 @@ CONFIG = {
 }
 
 
-def test_rule_filter_requires_llm_and_offensive_terms():
+def test_rule_filter_accepts_attack_criterion_without_legacy_exclusion_veto():
     llm_only = Paper(title="Large language model benchmark", status=PaperStatus.DEDUPED.value)
     both_groups = Paper(
         title="LLM agent for autonomous penetration testing",
         status=PaperStatus.DEDUPED.value,
     )
-    noisy = Paper(
-        title="Large language model for protein folding",
+    attack_with_unrelated_exclusion_phrase = Paper(
+        title="LLM agent for autonomous penetration testing and protein folding",
         status=PaperStatus.DEDUPED.value,
     )
 
-    apply_rule_filter([llm_only, both_groups, noisy], CONFIG)
+    apply_rule_filter([llm_only, both_groups, attack_with_unrelated_exclusion_phrase], CONFIG)
 
     assert llm_only.status == PaperStatus.REVIEW_NEEDED.value
     assert both_groups.status == PaperStatus.RULE_INCLUDED.value
-    assert noisy.status == PaperStatus.REVIEW_NEEDED.value
-    assert "protein folding" in noisy.screening_decisions[-1]["reason"]
+    assert attack_with_unrelated_exclusion_phrase.status == PaperStatus.RULE_INCLUDED.value
+
+
+def test_rule_filter_accepts_either_attack_or_agent_optimization_branch():
+    config = {
+        **CONFIG,
+        "research_protocol": {
+            "minimum_focus_dimensions": 1,
+            "focus_dimensions": {
+                "token_efficiency": {"keywords": ["token efficiency"]},
+                "memory_context_management": {"keywords": ["agent memory"]},
+                "hallucination_mitigation": {"keywords": ["hallucination mitigation"]},
+            },
+        },
+    }
+    attack_only = Paper(
+        title="LLM agent performs automated penetration testing",
+        status=PaperStatus.DEDUPED.value,
+    )
+    optimization_only = Paper(
+        title="LLM agent improves token efficiency",
+        status=PaperStatus.DEDUPED.value,
+    )
+    both_criteria = Paper(
+        title="LLM agent uses token efficiency in penetration testing",
+        status=PaperStatus.DEDUPED.value,
+    )
+    neither = Paper(
+        title="LLM agent benchmark on general language understanding",
+        status=PaperStatus.DEDUPED.value,
+    )
+
+    apply_rule_filter([attack_only, optimization_only, both_criteria, neither], config)
+
+    assert attack_only.status == PaperStatus.RULE_INCLUDED.value
+    assert attack_only.research_focus_hits == []
+    assert "A: LLM/agent performs or supports" in attack_only.screening_decisions[-1]["reason"]
+    assert optimization_only.status == PaperStatus.RULE_INCLUDED.value
+    assert optimization_only.research_focus_hits == ["token_efficiency"]
+    assert "B: optimization of an LLM/agent" in optimization_only.screening_decisions[-1]["reason"]
+    assert both_criteria.status == PaperStatus.RULE_INCLUDED.value
+    assert "A: LLM/agent performs or supports" in both_criteria.screening_decisions[-1]["reason"]
+    assert "B: optimization of an LLM/agent" in both_criteria.screening_decisions[-1]["reason"]
+    assert neither.status == PaperStatus.REVIEW_NEEDED.value
 
 
 def test_rule_filter_rescreens_automated_results_but_preserves_human_decisions():
@@ -120,7 +163,7 @@ def test_semantic_filter_rechecks_existing_semantic_statuses(monkeypatch):
         title="LLM agent automates penetration testing",
         status=PaperStatus.SEMANTIC_LOW.value,
     )
-    paper.keyword_hit_count = 2
+    paper.keyword_hit_count = 1
     monkeypatch.setattr(semantic_filter, "SentenceTransformer", Model)
     monkeypatch.setattr(semantic_filter, "_get_model", lambda _: Model())
     monkeypatch.setattr(semantic_filter, "util", Similarity)
@@ -135,12 +178,12 @@ def test_semantic_filter_rechecks_existing_semantic_statuses(monkeypatch):
                 "semantic_weight": 0.8,
                 "keyword_weight": 0.2,
             },
-            "rule_filter": {"min_keyword_hits": 2},
         },
     )
 
     assert paper.semantic_label == "HIGH"
     assert paper.status == PaperStatus.SEMANTIC_HIGH.value
+    assert "Keyword signal: 1.000" in paper.screening_decisions[-1]["reason"]
 
 
 def test_screening_import_validates_batch_before_mutation():
@@ -329,6 +372,39 @@ def test_candidate_suggestions_do_not_change_review_status():
     assert candidate.status == PaperStatus.SEMANTIC_HIGH.value
 
 
+def test_broad_candidate_is_sent_to_human_review():
+    candidate = Paper(
+        title=(
+            "LLM agent penetration test enumeration exploit tool use "
+            "token usage success rate"
+        ),
+        status=PaperStatus.SEMANTIC_HIGH.value,
+    )
+
+    classify_papers(
+        [candidate],
+        {**CONFIG, "research_protocol": {"max_matched_topic_categories": 3}},
+        include_candidates=True,
+    )
+    human_included = Paper(
+        title=candidate.title,
+        status=PaperStatus.HUMAN_INCLUDED.value,
+    )
+    classify_papers(
+        [human_included],
+        {**CONFIG, "research_protocol": {"max_matched_topic_categories": 3}},
+        include_candidates=True,
+    )
+
+    assert candidate.status == PaperStatus.REVIEW_NEEDED.value
+    breadth_decision = next(
+        decision for decision in candidate.screening_decisions
+        if decision["stage"] == "scope_breadth"
+    )
+    assert "distinct taxonomy topics" in breadth_decision["reason"]
+    assert human_included.status == PaperStatus.HUMAN_INCLUDED.value
+
+
 def test_prisma_uses_search_events_and_reason_codes():
     excluded = Paper(status=PaperStatus.HUMAN_EXCLUDED.value, sources=["openalex"])
     excluded.add_screening_decision(
@@ -468,6 +544,7 @@ def test_pipeline_rewrites_output_guide_for_each_run(tmp_path):
     assert "Có thể nhập từng phần" in first_guide
     assert "import-screening --config config.yaml" in first_guide
     assert "import-coding --config config.yaml" in first_guide
+
     assert "không tải hoặc đọc bài" in first_guide
 
     guide_path.unlink()
@@ -478,6 +555,341 @@ def test_pipeline_rewrites_output_guide_for_each_run(tmp_path):
     assert second_pipeline.run_id != first_run_id
     assert second_pipeline.run_id in second_guide
     assert guide_path.exists()
+
+
+def test_config_queries_have_auditable_keyword_groups():
+    config = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    queries = config["search"]["queries"]
+    query_keyword_groups = config["research_protocol"]["query_keyword_groups"]
+
+    assert len(queries) == 5
+    assert set(queries) == set(query_keyword_groups)
+    assert all(query_keyword_groups[query]["llm_agent"] for query in queries)
+    assert all(query_keyword_groups[query]["question_component"] for query in queries)
+    assert {
+        query_keyword_groups[query]["criterion"] for query in queries
+    } == {"attack_execution_support", "agent_optimization"}
+    assert sum(
+        query_keyword_groups[query]["criterion"] == "attack_execution_support"
+        for query in queries
+    ) == 2
+    assert sum(
+        query_keyword_groups[query]["criterion"] == "agent_optimization"
+        for query in queries
+    ) == 3
+    assert all(
+        query_keyword_groups[query]["offensive_security"]
+        for query in queries
+        if query_keyword_groups[query]["criterion"] == "attack_execution_support"
+    )
+    assert all(
+        query_keyword_groups[query]["focus_terms"]
+        for query in queries
+        if query_keyword_groups[query]["criterion"] == "agent_optimization"
+    )
+    assert {
+        query_keyword_groups[query]["focus_dimension"]
+        for query in queries
+        if query_keyword_groups[query]["criterion"] == "agent_optimization"
+    } == {
+        "token_efficiency",
+        "memory_context_management",
+        "hallucination_mitigation",
+    }
+    assert sum(
+        query_keyword_groups[query]["focus_dimension"] == "token_efficiency"
+        for query in queries
+    ) == 1
+    assert sum(
+        query_keyword_groups[query]["focus_dimension"] == "memory_context_management"
+        for query in queries
+    ) == 1
+    assert sum(
+        query_keyword_groups[query]["focus_dimension"] == "hallucination_mitigation"
+        for query in queries
+    ) == 1
+    assert config["research_protocol"]["max_research_per_query"] == 20
+
+
+def test_query_research_report_limits_unique_papers_and_splits_focus_sheets(tmp_path):
+    query = "LLM agent token efficiency"
+    config = {
+        "search": {"sources": ["openalex", "crossref"], "queries": [query]},
+        "research_protocol": {
+            "max_research_per_query": 20,
+            "query_keyword_groups": {
+                query: {
+                    "criterion": "agent_optimization",
+                    "question_component": "Optimize LLM agents for token efficiency.",
+                    "llm_agent": ["LLM agent"],
+                    "offensive_security": ["penetration testing"],
+                    "focus_dimension": "token_efficiency",
+                    "focus_terms": ["token efficiency"],
+                }
+            },
+            "focus_dimensions": {
+                "token_efficiency": {
+                    "keywords": ["token efficiency", "token usage"]
+                },
+                "memory_context_management": {"keywords": ["agent memory"]},
+                "hallucination_mitigation": {"keywords": ["hallucination"]},
+            },
+        },
+        "rule_filter": {
+            "llm_terms": ["LLM"],
+            "offensive_terms": ["penetration testing"],
+        },
+    }
+    results = []
+    for paper_number in range(25):
+        record = {
+            "id": f"paper-{paper_number}",
+            "title": f"LLM agent penetration testing token efficiency paper {paper_number}",
+            "title_normalized": f"paper {paper_number}",
+            "authors": ["Author"],
+            "year": 2025,
+            "doi": f"10.1000/{paper_number}",
+            "doi_normalized": f"10.1000/{paper_number}",
+            "abstract": "Improves token efficiency for LLM agent penetration testing.",
+            "url": "",
+        }
+        for source in ("openalex", "crossref"):
+            results.append({
+                "run_id": "test-run",
+                "query": query,
+                "source": source,
+                "cache_used": False,
+                "record": record,
+            })
+
+    summary_path, detail_path = export_search_query_reports(
+        config,
+        "test-run",
+        [
+            {"source": source, "query": query, "result_count": 25}
+            for source in ("openalex", "crossref")
+        ],
+        results,
+        tmp_path,
+    )
+
+    summary_book = load_workbook(summary_path, read_only=True)
+    summary_sheet = summary_book["Query summary"]
+    headers = [cell.value for cell in summary_sheet[3]]
+    summary = dict(zip(headers, next(summary_sheet.iter_rows(
+        min_row=4, max_row=4, values_only=True
+    ))))
+    assert summary["Unique research matching A or B"] == 25
+    assert summary["Matching both A and B by keywords"] == 25
+    assert summary["Research selected for detail report"] == 20
+    summary_book.close()
+
+    detail_book = load_workbook(detail_path, read_only=True)
+    assert detail_book["Research by query"].max_row == 21
+    token_sheet = detail_book["token_efficiency"]
+    assert token_sheet.max_row == 21
+    headers = [cell.value for cell in token_sheet[1]]
+    first_record = dict(zip(headers, next(token_sheet.iter_rows(
+        min_row=2, max_row=2, values_only=True
+    ))))
+    assert first_record["Sources"] == "crossref; openalex"
+    assert first_record["Matched A/B keyword evidence (report-only)"] == (
+        "Both A and B (keyword evidence)"
+    )
+    detail_book.close()
+
+
+def test_query_report_prioritizes_both_criteria_then_balances_single_criterion(
+    tmp_path,
+):
+    query = "LLM agent token efficiency"
+    config = {
+        "search": {"sources": ["openalex"], "queries": [query]},
+        "research_protocol": {
+            "max_research_per_query": 20,
+            "minimum_focus_dimensions": 1,
+            "query_keyword_groups": {
+                query: {
+                    "criterion": "agent_optimization",
+                    "question_component": "Optimize LLM agents for token efficiency.",
+                    "llm_agent": ["LLM agent"],
+                    "offensive_security": [],
+                    "focus_dimension": "token_efficiency",
+                    "focus_terms": ["token efficiency"],
+                }
+            },
+            "focus_dimensions": {
+                "token_efficiency": {"keywords": ["token efficiency"]}
+            },
+        },
+        "rule_filter": {
+            "llm_terms": ["LLM"],
+            "offensive_terms": ["penetration testing"],
+        },
+    }
+    results = []
+    papers = [
+        (f"both-{number}", "LLM agent penetration testing token efficiency")
+        for number in range(2)
+    ]
+    papers.extend(
+        (f"attack-{number}", "LLM agent penetration testing")
+        for number in range(12)
+    )
+    papers.extend(
+        (f"optimization-{number}", "LLM agent token efficiency")
+        for number in range(12)
+    )
+    for paper_id, title in papers:
+        results.append({
+            "run_id": "balanced-run",
+            "query": query,
+            "source": "openalex",
+            "cache_used": False,
+            "record": {
+                "id": paper_id,
+                "title": title,
+                "title_normalized": title.casefold(),
+                "authors": [],
+                "year": 2025,
+                "doi": f"10.1000/{paper_id}",
+                "doi_normalized": f"10.1000/{paper_id}",
+                "abstract": title,
+                "url": "",
+            },
+        })
+
+    summary_path, detail_path = export_search_query_reports(
+        config,
+        "balanced-run",
+        [{"source": "openalex", "query": query, "result_count": len(results)}],
+        results,
+        tmp_path,
+    )
+
+    summary_book = load_workbook(summary_path, read_only=True)
+    summary_sheet = summary_book["Query summary"]
+    headers = [cell.value for cell in summary_sheet[3]]
+    summary = dict(zip(headers, next(summary_sheet.iter_rows(
+        min_row=4, max_row=4, values_only=True
+    ))))
+    assert summary["Matching both A and B by keywords"] == 2
+    assert summary["Matching A only by keywords"] == 12
+    assert summary["Matching B only by keywords"] == 12
+    assert summary["Research selected for detail report"] == 20
+    summary_book.close()
+
+    detail_book = load_workbook(detail_path, read_only=True)
+    sheet = detail_book["Research by query"]
+    headers = [cell.value for cell in sheet[1]]
+    records = [
+        dict(zip(headers, row))
+        for row in sheet.iter_rows(min_row=2, values_only=True)
+    ]
+    categories = [
+        record["Matched A/B keyword evidence (report-only)"] for record in records
+    ]
+    assert categories[:2] == [
+        "Both A and B (keyword evidence)",
+        "Both A and B (keyword evidence)",
+    ]
+    assert categories.count("A only (keyword evidence)") == 9
+    assert categories.count("B only (keyword evidence)") == 9
+    assert categories[2:6] == [
+        "A only (keyword evidence)",
+        "B only (keyword evidence)",
+        "A only (keyword evidence)",
+        "B only (keyword evidence)",
+    ]
+    detail_book.close()
+
+
+def test_query_research_report_accepts_attack_branch_without_optimization_term(tmp_path):
+    query = "LLM agents perform automated penetration testing"
+    config = {
+        "search": {"sources": ["openalex"], "queries": [query]},
+        "research_protocol": {
+            "max_research_per_query": 20,
+            "query_keyword_groups": {
+                query: {
+                    "criterion": "attack_execution_support",
+                    "question_component": "Do LLM agents perform offensive tasks?",
+                    "llm_agent": ["LLM agents"],
+                    "offensive_security": ["penetration testing"],
+                    "focus_dimension": None,
+                    "focus_terms": [],
+                }
+            },
+            "focus_dimensions": {
+                "token_efficiency": {"keywords": ["token efficiency"]}
+            },
+        },
+        "rule_filter": {
+            "llm_terms": ["LLM"],
+            "offensive_terms": ["penetration test"],
+        },
+    }
+    result = {
+        "run_id": "attack-run",
+        "query": query,
+        "source": "openalex",
+        "cache_used": False,
+        "record": {
+            "id": "attack-paper",
+            "title": "LLM agent for automated penetration testing",
+            "title_normalized": "llm agent for automated penetration testing",
+            "authors": [],
+            "year": 2025,
+            "doi": "10.1000/attack",
+            "doi_normalized": "10.1000/attack",
+            "abstract": "An LLM agent autonomously performs penetration testing.",
+            "url": "https://example.org/attack",
+        },
+    }
+    outside_keyword_evidence = {
+        **result,
+        "record": {
+            **result["record"],
+            "id": "query-returned-paper",
+            "title": "Research result returned for this query",
+            "title_normalized": "research result returned for this query",
+            "doi": "10.1000/query-returned",
+            "doi_normalized": "10.1000/query-returned",
+            "abstract": "Relevant search result; no configured A/B phrase in metadata.",
+        },
+    }
+
+    _, detail_path = export_search_query_reports(
+        config,
+        "attack-run",
+        [{"source": "openalex", "query": query, "result_count": 2}],
+        [result, outside_keyword_evidence],
+        tmp_path,
+    )
+
+    workbook = load_workbook(detail_path, read_only=True)
+    sheet = workbook["Research by query"]
+    assert sheet.max_row == 3
+    headers = [cell.value for cell in sheet[1]]
+    rows = [
+        dict(zip(headers, values))
+        for values in sheet.iter_rows(
+        min_row=2, max_row=2, values_only=True
+        )
+    ]
+    record = rows[0]
+    assert record["Natural-language criterion"] == "attack_execution_support"
+    assert record["Title"] == "LLM agent for automated penetration testing"
+    query_returned_record = dict(zip(headers, next(sheet.iter_rows(
+        min_row=3, max_row=3, values_only=True
+    ))))
+    assert (
+        query_returned_record["Matched A/B keyword evidence (report-only)"]
+        == "No A/B keyword evidence"
+    )
+    url_column = headers.index("URL") + 1
+    assert sheet.cell(row=2, column=url_column).value == "https://example.org/attack"
+    workbook.close()
 
 
 def test_config_hash_tracks_token_usage_but_redacts_credentials():
@@ -660,7 +1072,7 @@ def test_search_discards_records_outside_year_range_and_missing_year(tmp_path):
             "sources": ["fixture"],
             "queries": ["LLM security"],
             "max_results_per_query": 10,
-            "year_from": 2024,
+            "year_from": 2025,
             "year_to": 2026,
         },
         "storage": {
@@ -675,8 +1087,8 @@ def test_search_discards_records_outside_year_range_and_missing_year(tmp_path):
     class FixtureAdapter:
         def search(self, query, max_results):
             return [
-                Paper(title="Old paper", year=2023),
-                Paper(title="Current paper", year=2024),
+                Paper(title="Old paper", year=2024),
+                Paper(title="Current paper", year=2025),
                 Paper(title="Unknown-year paper"),
                 Paper(title="Future paper", year=2027),
             ]
@@ -694,7 +1106,136 @@ def test_search_discards_records_outside_year_range_and_missing_year(tmp_path):
         ).splitlines()
     ]
     assert [record["record"]["title"] for record in raw_records] == ["Current paper"]
+    summary_book = load_workbook(
+        tmp_path / "output" / "search_query_summary.xlsx", read_only=True
+    )
+    summary_sheet = summary_book["Query summary"]
+    summary_headers = [cell.value for cell in summary_sheet[3]]
+    summary = dict(zip(summary_headers, next(summary_sheet.iter_rows(
+        min_row=4, max_row=4, values_only=True
+    ))))
+    assert summary["Query"] == "LLM security"
+    assert summary["Returned by: fixture"] == 1
+    assert summary["Total source records (may contain cross-source duplicates)"] == 1
+    assert summary["Unique research in query (DOI/title dedup across sources)"] == 1
+    summary_book.close()
+
+    research_book = load_workbook(
+        tmp_path / "output" / "search_query_research.xlsx", read_only=True
+    )
+    research_sheet = research_book["Research by query"]
+    research_headers = [cell.value for cell in research_sheet[1]]
+    research = dict(zip(research_headers, next(research_sheet.iter_rows(
+        min_row=2, max_row=2, values_only=True
+    ))))
+    assert research["Query"] == "LLM security"
+    assert research["Title"] == "Current paper"
+    assert research["Year"] == 2025
+    assert research["Sources"] == "fixture"
+    research_book.close()
     pipeline.store._conn.close()
+
+
+def test_search_stops_requesting_provider_after_http_429(tmp_path):
+    query_names = ["query one", "query two", "query three"]
+    config = {
+        "search": {
+            "sources": ["fixture"],
+            "queries": query_names,
+            "api": {},
+        },
+        "storage": {
+            "database_file": str(tmp_path / "papers.sqlite"),
+            "cache_dir": str(tmp_path / "cache"),
+        },
+        "export": {"output_dir": str(tmp_path / "output")},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    response = Response()
+    response.status_code = 429
+    failure = HTTPError("rate limited", response=response)
+
+    class RateLimitedAdapter:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query, max_results):
+            self.calls.append(query)
+            raise failure
+
+    adapter = RateLimitedAdapter()
+    pipeline = Pipeline(config_path)
+    with patch("filtertool.search.get_adapter", return_value=adapter):
+        pipeline.run_search()
+
+    assert adapter.calls == ["query one"]
+    assert len(pipeline.search_snapshots) == 3
+    assert "HTTPError" in pipeline.search_snapshots[0]["error"]
+    assert all("Skipped after this source returned HTTP 429" in snapshot["error"]
+               for snapshot in pipeline.search_snapshots[1:])
+    assert len(pipeline.run_warnings) == 1
+    assert pipeline.run_warnings[0]["rate_limited"] is True
+    pipeline.store._conn.close()
+
+
+def test_search_cache_keeps_result_set_stable_when_only_screening_rules_change(tmp_path):
+    config = {
+        "search": {
+            "sources": ["fixture"],
+            "queries": ["LLM agent token efficiency"],
+            "max_results_per_query": 10,
+            "year_from": 2025,
+            "year_to": 2026,
+            "api": {},
+        },
+        "rule_filter": {"llm_terms": ["LLM"]},
+        "storage": {
+            "database_file": str(tmp_path / "papers.sqlite"),
+            "cache_dir": str(tmp_path / "cache"),
+        },
+        "export": {"output_dir": str(tmp_path / "output")},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    class FixtureAdapter:
+        calls = 0
+
+        def search(self, query, max_results):
+            self.calls += 1
+            return [
+                Paper(title="Zeta paper", year=2025, abstract="token efficiency"),
+                Paper(title="Alpha paper", year=2026, abstract="agent memory"),
+            ]
+
+    adapter = FixtureAdapter()
+    with patch("filtertool.search.get_adapter", return_value=adapter):
+        first = Pipeline(config_path)
+        first.run_search()
+        first_snapshot = first.search_snapshots[0]
+        first.store._conn.close()
+
+        config["rule_filter"]["llm_terms"] = ["language model"]
+        config["search"]["queries"].append("LLM agent token efficiency new query")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+        second = Pipeline(config_path)
+        second.run_search()
+        second_snapshot = second.search_snapshots[0]
+
+    assert adapter.calls == 2
+    assert first_snapshot["result_set_sha256"] == second_snapshot["result_set_sha256"]
+    assert second_snapshot["cache_used"] is True
+    manifest_path = second.write_run_manifest()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["research_protocol"]["search"]["queries"] == [
+        "LLM agent token efficiency",
+        "LLM agent token efficiency new query",
+    ]
+    assert manifest["search_snapshots"][0]["result_set_sha256"] == second_snapshot[
+        "result_set_sha256"
+    ]
+    second.store._conn.close()
 
 
 def test_dedup_summary_counts_existing_canonical_records(tmp_path, capsys):

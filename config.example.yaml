@@ -4,7 +4,91 @@
 # Copy this file and modify for your research project.
 # Run: filtertool run --config config.yaml
 
-protocol_version: "offensive-security-mapping-v1"
+protocol_version: "llm-agent-research-scope-v2"
+
+# --- Research protocol ---
+research_protocol:
+  question: "How are LLM-based agents used to perform or support cybersecurity attack tasks, and how are LLM-based agents optimized for token and cost efficiency, context and memory management, or hallucination mitigation?"
+  query_design: "Keyword queries are derived from two natural-language branches: (A) LLM agents perform/support offensive-security tasks; (B) optimization methods improve LLM agents on at least one named focus dimension. query_keyword_groups records the exact branch, question component, and keyword concepts for audit."
+  minimum_focus_dimensions: 1
+  max_matched_topic_categories: 3
+  max_research_per_query: 20
+  query_keyword_groups:
+    "LLM agents perform automated penetration testing":
+      criterion: "attack_execution_support"
+      question_component: "How are LLM-based agents used to perform offensive-security tasks?"
+      llm_agent: ["LLM agents"]
+      offensive_security: ["penetration testing"]
+      focus_dimension: null
+      focus_terms: []
+    "LLM agents support vulnerability exploitation and cyber attacks":
+      criterion: "attack_execution_support"
+      question_component: "How do LLM-based agents support offensive-security tasks?"
+      llm_agent: ["LLM agents"]
+      offensive_security: ["vulnerability exploitation", "cyber attacks"]
+      focus_dimension: null
+      focus_terms: []
+    "LLM agents token efficiency inference cost":
+      criterion: "agent_optimization"
+      question_component: "How are LLM-based agents optimized for token and cost efficiency?"
+      llm_agent: ["LLM agents"]
+      offensive_security: []
+      focus_dimension: "token_efficiency"
+      focus_terms: ["token efficiency", "inference cost"]
+    "LLM agent memory context management":
+      criterion: "agent_optimization"
+      question_component: "How are memory and context managed for LLM-based agents?"
+      llm_agent: ["LLM agent"]
+      offensive_security: []
+      focus_dimension: "memory_context_management"
+      focus_terms: ["memory", "context management"]
+    "LLM agent hallucination mitigation grounding":
+      criterion: "agent_optimization"
+      question_component: "How is hallucination mitigated in LLM-based agents?"
+      llm_agent: ["LLM agent"]
+      offensive_security: []
+      focus_dimension: "hallucination_mitigation"
+      focus_terms: ["hallucination mitigation", "grounding"]
+
+  # One or more dimensions makes a paper relevant; keyword matches are screening aids, not final decisions.
+  focus_dimensions:
+    token_efficiency:
+      keywords:
+        - "token efficiency"
+        - "token usage"
+        - "token consumption"
+        - "token budget"
+        - "token cost"
+        - "context length"
+        - "prompt length"
+        - "cost efficiency"
+        - "inference cost"
+        - "inference efficiency"
+        - "compute cost"
+        - "computational efficiency"
+    memory_context_management:
+      keywords:
+        - "agent memory"
+        - "long-term memory"
+        - "working memory"
+        - "memory management"
+        - "context management"
+        - "context window"
+        - "retrieval-augmented generation"
+        - "retrieval augmented generation"
+        - "knowledge retrieval"
+        - "RAG"
+    hallucination_mitigation:
+      keywords:
+        - "hallucination"
+        - "hallucinations"
+        - "hallucination mitigation"
+        - "factuality"
+        - "grounded generation"
+        - "grounding"
+        - "fact checking"
+        - "fact-checking"
+        - "self-verification"
 
 # --- Search ---
 search:
@@ -18,32 +102,27 @@ search:
 
   # Search queries — each query is sent to all enabled sources
   queries:
-    - "LLM penetration testing"
-    - "large language model automated penetration testing"
-    - "LLM agent vulnerability exploitation"
-    - "LLM exploit generation"
-    - "LLM capture the flag"
-    - "autonomous hacking agent language model"
-    - "LLM offensive security agent"
-    - "LLM red team cyber attack automation"
-    - "GPT privilege escalation"
-    - "multi-agent LLM penetration testing"
+    - "LLM agents perform automated penetration testing"
+    - "LLM agents support vulnerability exploitation and cyber attacks"
+    - "LLM agents token efficiency inference cost"
+    - "LLM agent memory context management"
+    - "LLM agent hallucination mitigation grounding"
 
   # Maximum results per query per source; adapters cap individual requests at 100.
   max_results_per_query: 100
 
   # Year range (inclusive); with a bound set, the collector excludes records without a year.
-  year_from: 2024
+  year_from: 2025
   year_to: 2026
 
   # API settings
   api:
     retry_attempts: 2             # Retries for transient network and server errors
-    rate_limit_retry_attempts: 5  # Extra retries for HTTP 429 responses
+    rate_limit_retry_attempts: 2  # Retry once, then pause that provider for this run after HTTP 429
     retry_delay_seconds: 1        # Adaptive backoff starts quickly and grows only after failures
     rate_limit_delay_seconds: 0.0 # No artificial delay for hosts without a configured floor
     minimum_interval_by_host_seconds:
-      api.semanticscholar.org: 1.0
+      api.semanticscholar.org: 3.0
       export.arxiv.org: 3.0
     rate_limit_recovery_factor: 0.5
     rate_limit_successes_to_recover: 1
@@ -69,11 +148,9 @@ dedup:
 
 # --- Rule-based Filter ---
 rule_filter:
-  # Paper must contain at least `min_keyword_hits` inclusion keywords
-  # in title + abstract combined
-  min_keyword_hits: 2
-
-  # At least one term from each group is required; unmatched papers remain for human review.
+  # Criterion A: LLM/agent and offensive-security terms must both match.
+  # Criterion B: LLM/agent and at least one research focus dimension must match.
+  # A or B makes an automated candidate; human screening makes final decisions.
   llm_terms:
     - "large language model"
     - "LLM"
@@ -96,38 +173,6 @@ rule_filter:
     - "cyber attack"
     - "hacking"
     - "attack automation"
-  # Compatibility union for older tooling.
-  inclusion_keywords:
-    - "large language model"
-    - "LLM"
-    - "GPT"
-    - "ChatGPT"
-    - "language model"
-    - "AI agent"
-    - "agentic"
-    - "penetration test"
-    - "pentest"
-    - "offensive security"
-    - "red team"
-    - "exploit"
-    - "vulnerability exploitation"
-    - "capture the flag"
-    - "CTF"
-    - "privilege escalation"
-    - "lateral movement"
-    - "cyber attack"
-    - "hacking"
-    - "attack automation"
-
-  # Minimal noise exclusions; these flag review and never make a final decision.
-  exclusion_keywords:
-    - "protein folding"
-    - "drug discovery"
-    - "medical imaging"
-    - "climate model"
-
-  # Multi-pass: run inclusion first, then exclusion
-  multi_pass: true
 
 # --- Semantic Filter ---
 semantic_filter:
@@ -138,14 +183,16 @@ semantic_filter:
 
   # Semantic scores prioritize human review and do not determine final inclusion.
   reference_sentences:
-    - "Using large language models to automate penetration testing"
-    - "LLM agents that autonomously exploit software vulnerabilities"
-    - "Language model agents solving capture the flag security challenges"
-    - "Multi-agent LLM framework for offensive security and red team operations"
-    - "Improving the success rate and cost efficiency of LLM-driven cyber attacks"
-    - "Reinforcement learning or fine-tuning to improve LLM attack agents"
-    - "Memory, planning and tool use for autonomous LLM hacking agents"
-    - "Benchmark for evaluating LLM agents on exploit generation and penetration testing"
+    - "Large language model agents that autonomously perform penetration testing and exploit vulnerabilities"
+    - "LLM agents that assist cybersecurity professionals with red teaming and vulnerability exploitation"
+    - "Methods that reduce token usage and inference costs of large language model agents"
+    - "Memory and context management techniques for long-running language model agents"
+    - "Grounding and verification methods that reduce hallucinations in LLM agent outputs"
+    - "LLM agents for offensive cybersecurity that reduce token usage and inference cost"
+    - "Memory and context management for language model agents performing penetration testing"
+    - "Grounding and hallucination mitigation for LLM agents in offensive security tasks"
+    - "Autonomous penetration testing agents that use retrieval and memory to manage long context"
+    - "Methods that improve token efficiency, memory use, or factual reliability of LLM cyber agents"
 
   # Thresholds for HIGH / REVIEW / LOW
   high_threshold: 0.55
@@ -300,6 +347,7 @@ export:
     - status
     - semantic_score
     - semantic_label
+    - research_focus_hits
     - human_decision
     - reason_code
     - attack_methods_auto

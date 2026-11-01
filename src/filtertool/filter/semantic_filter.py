@@ -36,9 +36,6 @@ def apply_semantic_filter(papers: list[Paper], config: dict) -> list[Paper]:
     keyword_weight = semantic_config.get("keyword_weight", 0.3)
     semantic_weight = semantic_config.get("semantic_weight", 0.7)
     
-    rule_config = config.get("rule_filter", {})
-    keyword_target = max(1, rule_config.get("min_keyword_hits", 1))
-        
     # Semantic scores prioritize human review; they do not determine inclusion.
     eligible_statuses = {
         PaperStatus.RULE_INCLUDED,
@@ -100,8 +97,8 @@ def apply_semantic_filter(papers: list[Paper], config: dict) -> list[Paper]:
             semantic_sim = max_scores[score_idx]
             score_idx += 1
             
-        keyword_ratio = min(1.0, paper.keyword_hit_count / keyword_target)
-        final_score = (semantic_weight * semantic_sim) + (keyword_weight * keyword_ratio)
+        keyword_signal = 1.0 if paper.keyword_hit_count else 0.0
+        final_score = (semantic_weight * semantic_sim) + (keyword_weight * keyword_signal)
         
         paper.semantic_score = final_score
         
@@ -121,7 +118,10 @@ def apply_semantic_filter(papers: list[Paper], config: dict) -> list[Paper]:
         paper.add_screening_decision(
             stage="semantic_filter",
             decision=label,
-            reason=f"Semantic similarity: {semantic_sim:.3f}, Keyword ratio: {keyword_ratio:.3f}",
+            reason=(
+                f"Semantic similarity: {semantic_sim:.3f}, "
+                f"Keyword signal: {keyword_signal:.3f}"
+            ),
             score=final_score
         )
         

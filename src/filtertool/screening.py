@@ -19,6 +19,7 @@ from filtertool.models import Paper, PaperStatus
 SCREENING_COLUMNS = [
     "id", "title", "year", "doi", "url", "abstract", "sources",
     "publication_type", "semantic_label", "semantic_score", "keyword_hits",
+    "research_focus_hits",
     "screening_stage", "human_decision", "reason_code", "note", "reviewer",
     "date", "fulltext_retrieved",
 ]
@@ -34,9 +35,9 @@ _REASON_CODES = {
 }
 _REASON_CODE_MEANINGS = {
     "IC1": "LLM/agent directly performs an offensive-security task",
-    "IC2": "LLM/agent assists, enables, or optimizes an offensive-security task",
+    "IC2": "LLM/agent is optimized for token/cost efficiency, memory/context management, or hallucination mitigation",
     "EC1": "No LLM or AI-agent role",
-    "EC2": "No offensive-security task, or defensive-only use",
+    "EC2": "Neither LLM/agent offensive-security work nor an in-scope LLM-agent optimization",
     "EC3": "Other out-of-scope reason; explain briefly in note",
 }
 
@@ -121,6 +122,7 @@ def export_screening_sheet(
             paper.semantic_label or "",
             paper.semantic_score,
             "; ".join(paper.keyword_hits),
+            "; ".join(paper.research_focus_hits),
             stage,
             "",
             "",

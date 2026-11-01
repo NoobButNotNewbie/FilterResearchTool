@@ -121,6 +121,7 @@ class Paper:
     # --- Keyword match info ---
     keyword_hits: list[str] = field(default_factory=list)
     keyword_hit_count: int = 0
+    research_focus_hits: list[str] = field(default_factory=list)
 
     # --- Human screening ---
     screening_stage: str | None = None

@@ -1,6 +1,6 @@
 # FilterTool
 
-FilterTool hỗ trợ systematic mapping về việc dùng LLM/AI agent để thực hiện offensive security: penetration testing, khai thác lỗ hổng, CTF và các tác vụ liên quan. Tool chỉ thu thập và sàng lọc ứng viên; người nghiên cứu quyết định inclusion, mã hóa cuối cùng và xác minh mọi candidate sparse cell.
+FilterTool hỗ trợ systematic mapping về (A) LLM/AI agent thực hiện hoặc hỗ trợ offensive security và/hoặc (B) tối ưu LLM/agent về token/chi phí, memory/context hoặc giảm hallucination. Tool chỉ thu thập và sàng lọc ứng viên; người nghiên cứu quyết định inclusion, mã hóa cuối cùng và xác minh mọi candidate sparse cell.
 
 Source code is licensed under MIT (see [LICENSE](LICENSE)). Use of the Semantic Scholar API is separately subject to its API terms and rate limits; the software license does not grant API access.
 
@@ -8,7 +8,7 @@ Source code is licensed under MIT (see [LICENSE](LICENSE)). Use of the Semantic 
 - **Local & Miễn phí**: Chạy hoàn toàn trên máy cá nhân, không phụ thuộc LLM/API trả phí.
 - **Search Multi-source**: Tích hợp Semantic Scholar, OpenAlex, Crossref và arXiv. arXiv có preprint, không mặc nhiên đã peer-review.
 - **Deduplication**: Xóa trùng lặp dựa trên DOI và fuzzy matching Title.
-- **Rule-based Filter**: Candidate phải khớp ít nhất một LLM/agent term và một offensive-security term; các trường hợp còn lại được giữ cho human review, không bị loại tự động.
+- **Rule-based Filter**: Ứng viên khớp A (ít nhất một LLM/agent term và một offensive-security term) hoặc B (ít nhất một LLM/agent term và focus dimension đã cấu hình). Không còn ngưỡng tổng số keyword hay exclusion-keyword veto; các trường hợp không khớp A/B vẫn được giữ cho human review, không bị loại tự động.
 - **Semantic Filter**: Sentence Transformers chỉ ưu tiên review; semantic score không phải quyết định include/exclude.
 - **Rescreen on collection**: Mỗi lần search, rule filter, semantic score và taxonomy được tính lại cho toàn bộ record chưa có quyết định human; duplicate và human decisions được giữ nguyên.
 - **Human Screening**: Xuất title/abstract và full-text workbook; import Include/Exclude/Unsure cùng reason code.
@@ -49,7 +49,7 @@ $env:SEMANTIC_SCHOLAR_API_KEY = "<your-new-key>"
 For double-click runs, add the variable through Windows User Environment Variables. Open only one FilterTool instance at a time: adaptive pacing is shared across Semantic Scholar endpoints within that process.
 
 ### Request pacing
-Hosts without a configured floor start without an artificial delay and slow down on transient errors or HTTP 429 responses; successful requests gradually restore speed. The example config enforces at least 1 second between all Semantic Scholar endpoints (the introductory API-key limit) and 3 seconds for the arXiv export API. `Retry-After` is honored. The limiter is shared within one process, so do not run concurrent copies with the same API key.
+Hosts without a configured floor start without an artificial delay and slow down on transient errors or HTTP 429 responses; successful requests gradually restore speed. The example config enforces at least 3 seconds between Semantic Scholar requests and 3 seconds for the arXiv export API. After a source returns HTTP 429, the run retries once (respecting `Retry-After`) then stops sending uncached requests to that source for the rest of the run; other sources continue and cached results remain usable. This avoids retrying every query against a source that is already refusing requests. Limits are provider/IP/account dependent, so pacing cannot guarantee there will be no 429. The limiter is shared within one process, so do not run concurrent copies with the same API key.
 
 ## Cách sử dụng
 
@@ -61,6 +61,13 @@ Thu thập độc lập, không lọc hay xuất quyết định:
 filtertool collect --config config.yaml --no-cache
 ```
 `raw_search_results.jsonl` lưu từng Paper record từ adapter trước dedup/filter; đây là metadata đã chuẩn hóa, không phải nguyên văn response JSON/XML của API.
+
+### Tái lập truy vấn và phạm vi nghiên cứu
+`research_protocol` trong config lưu câu hỏi nghiên cứu tự nhiên và ánh xạ năm keyword query sang hai nhánh: (A) LLM/agent thực hiện hoặc hỗ trợ offensive-security tasks (2 query); (B) tối ưu LLM/agent theo token/cost, memory/context hoặc hallucination (3 query). `query_keyword_groups` ghi nhánh, phần câu hỏi được truy vấn và keyword concepts cho từng query. Rule filter dùng OR giữa A và B, nhưng cả hai nhánh đều yêu cầu LLM/agent; nhánh A cần offensive-security term, nhánh B cần ít nhất một focus dimension. Số keyword không phải cổng lọc; exclusion keywords không còn khả năng phủ quyết ứng viên. Hơn ba nhóm chủ đề taxonomy chỉ gắn cờ để review thêm, không tự động loại. `run_manifest.json` lưu nguyên câu hỏi, query cùng keyword map, source, năm, câu tham chiếu semantic và hash từng tập kết quả; `screening_sheet.xlsx` có cột `research_focus_hits`.
+
+Sau mỗi lần `search`/`collect` chạy xong, pipeline tạo `search_query_summary.xlsx` và `search_query_research.xlsx` (tối đa 20 research/query, nếu có đủ dữ liệu). Danh sách lấy từ kết quả của đúng query và xếp theo keyword liên quan query. Nhãn A/B chỉ mô tả keyword evidence trong title/abstract, không phải điều kiện loại bài khỏi report. Bài có keyword evidence cho cả hai nhánh được ưu tiên; phần còn lại luân phiên A-only/B-only, cuối cùng mới đến bài chưa phát hiện keyword evidence A/B. Summary thống kê từng nhóm; cột `Matched A/B keyword evidence (report-only)` chỉ rõ nhãn cho mỗi bài. Bài trùng giữa source được gộp trong query và Sources liệt kê nơi tìm thấy; cùng bài vẫn có thể xuất hiện dưới query khác. Shortlist là ứng viên để review, không phải quyết định include cuối.
+
+Mặc định, API response được cache trong database SQLite theo cấu hình search, source và query; thay đổi keyword/rubric không làm truy vấn lại. Vì vậy có thể xóa thư mục output rồi chạy lại để dùng response đã cache, miễn database/cache còn nguyên và không bật `--no-cache`. Hash SHA-256 trong manifest cho biết tập metadata mỗi source/query có giống nhau hay không. `--no-cache` lấy dữ liệu live, và các source học thuật có thể thay đổi thứ hạng/kết quả theo thời gian; khi đó query giống nhau không đảm bảo tập kết quả giống hệt.
 
 Xử lý dữ liệu đã thu thập để tạo screening workbook, không gọi nguồn tìm kiếm:
 ```bash

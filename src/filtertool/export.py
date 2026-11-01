@@ -55,6 +55,7 @@ _COLUMN_DEFS: dict[str, tuple[str, int, Any]] = {
     "semantic_label":         ("Semantic Label", 14, lambda p: p.semantic_label or ""),
     "keyword_hits":           ("Keyword Hits", 30, lambda p: ", ".join(p.keyword_hits[:10])),
     "keyword_hit_count":      ("Keyword Count", 13, lambda p: p.keyword_hit_count),
+    "research_focus_hits":    ("Research Focus Hits", 28, lambda p: ", ".join(p.research_focus_hits)),
     "attack_methods":         ("Attack Methods", 25, lambda p: ", ".join(p.attack_methods)),
     "optimization_techniques": ("Optimization Techniques", 30, lambda p: ", ".join(p.optimization_techniques)),
     "attack_stages":          ("Attack Stages", 25, lambda p: ", ".join(p.attack_stages)),
@@ -328,3 +329,472 @@ def export_to_json(papers: list[Paper], output_path: str | Path) -> Path:
         json.dump(data, f, ensure_ascii=False, indent=2)
     return output_path
 
+
+def export_search_query_reports(
+    config: dict,
+    run_id: str,
+    snapshots: list[dict[str, Any]],
+    raw_results: list[dict[str, Any]],
+    output_dir: str | Path,
+) -> tuple[Path, Path]:
+    """Export per-query candidates, prioritizing papers matching both criteria."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    search_config = config.get("search", {})
+    protocol = config.get("research_protocol", {})
+    keyword_groups = protocol.get("query_keyword_groups", {})
+    rule_config = config.get("rule_filter", {})
+    sources = search_config.get("sources", [])
+    queries = search_config.get("queries", [])
+    max_research_per_query = max(
+        1, int(protocol.get("max_research_per_query", 20))
+    )
+    snapshot_by_key = {
+        (snapshot.get("source"), snapshot.get("query")): snapshot
+        for snapshot in snapshots
+    }
+    results_by_query: dict[str, list[dict[str, Any]]] = {
+        query: [] for query in queries
+    }
+    for result in raw_results:
+        query = result.get("query")
+        if query in results_by_query:
+            results_by_query[query].append(result)
+
+    def research_identity(record: dict[str, Any]) -> str:
+        return str(
+            record.get("doi_normalized")
+            or record.get("doi")
+            or (
+                f"{(record.get('title_normalized') or record.get('title') or '').strip().casefold()}"
+                f"|{record.get('year') or ''}"
+            )
+        ).casefold()
+
+    selected_by_query: dict[str, list[dict[str, Any]]] = {}
+    candidate_counts_by_query: dict[str, dict[str, int]] = {}
+    for query in queries:
+        group = keyword_groups.get(query, {})
+        dimension_name = group.get("focus_dimension")
+        dimension_config = protocol.get("focus_dimensions", {}).get(
+            dimension_name, {}
+        )
+        focus_keywords = [
+            str(keyword).casefold()
+            for keyword in dimension_config.get("keywords", [])
+        ]
+        llm_keywords = [
+            str(keyword).casefold() for keyword in rule_config.get("llm_terms", [])
+        ]
+        offensive_keywords = [
+            str(keyword).casefold()
+            for keyword in rule_config.get("offensive_terms", [])
+        ]
+        query_focus_keywords = [
+            str(keyword).casefold() for keyword in group.get("focus_terms", [])
+        ]
+        unique_candidates: dict[str, dict[str, Any]] = {}
+        for result in results_by_query[query]:
+            record = result.get("record", {})
+            identity = research_identity(record)
+            if not identity.strip("|"):
+                continue
+            text = " ".join(
+                (record.get("title") or "", record.get("abstract") or "")
+            ).casefold()
+            matched_focus = [keyword for keyword in focus_keywords if keyword in text]
+            matched_query_focus = [
+                keyword for keyword in query_focus_keywords if keyword in text
+            ]
+            matched_llm = [keyword for keyword in llm_keywords if keyword in text]
+            matched_offensive = [
+                keyword for keyword in offensive_keywords if keyword in text
+            ]
+            candidate = unique_candidates.get(identity)
+            canonical_record = json.dumps(
+                record, sort_keys=True, ensure_ascii=True, separators=(",", ":")
+            )
+            if candidate is None:
+                candidate = {
+                    "record": record,
+                    "canonical_record": canonical_record,
+                    "sources": set(),
+                    "cache_used": set(),
+                    "focus_matches": set(),
+                    "query_focus_matches": set(),
+                    "query_keyword_matches": set(),
+                    "llm_matches": set(),
+                    "offensive_matches": set(),
+                }
+                unique_candidates[identity] = candidate
+            else:
+                current_record = candidate["record"]
+                current_rank = (
+                    bool(current_record.get("abstract")),
+                    len(current_record.get("abstract") or ""),
+                    bool(current_record.get("doi")),
+                    len(current_record.get("title") or ""),
+                )
+                record_rank = (
+                    bool(record.get("abstract")),
+                    len(record.get("abstract") or ""),
+                    bool(record.get("doi")),
+                    len(record.get("title") or ""),
+                )
+                if record_rank > current_rank or (
+                    record_rank == current_rank
+                    and canonical_record < candidate["canonical_record"]
+                ):
+                    candidate["record"] = record
+                    candidate["canonical_record"] = canonical_record
+            candidate["sources"].add(result.get("source", ""))
+            candidate["cache_used"].add(str(bool(result.get("cache_used"))).lower())
+            candidate["focus_matches"].update(matched_focus)
+            candidate["query_focus_matches"].update(matched_query_focus)
+            candidate["query_keyword_matches"].update(
+                keyword
+                for keyword in (
+                    group.get("llm_agent", [])
+                    + group.get("offensive_security", [])
+                    + group.get("focus_terms", [])
+                )
+                if str(keyword).casefold() in text
+            )
+            candidate["llm_matches"].update(matched_llm)
+            candidate["offensive_matches"].update(matched_offensive)
+
+        candidates_by_criteria: dict[str, dict[str, dict[str, Any]]] = {
+            "Both A and B (keyword evidence)": {},
+            "A only (keyword evidence)": {},
+            "B only (keyword evidence)": {},
+            "No A/B keyword evidence": {},
+        }
+        for identity, candidate in unique_candidates.items():
+            attack_match = bool(
+                candidate["llm_matches"] and candidate["offensive_matches"]
+            )
+            optimization_focus = (
+                candidate["query_focus_matches"]
+                if dimension_name
+                else candidate["focus_matches"]
+            )
+            optimization_match = (
+                bool(candidate["llm_matches"])
+                and len(optimization_focus)
+                >= int(protocol.get("minimum_focus_dimensions", 1))
+            )
+            if attack_match and optimization_match:
+                criterion_bucket = "Both A and B (keyword evidence)"
+            elif attack_match:
+                criterion_bucket = "A only (keyword evidence)"
+            elif optimization_match:
+                criterion_bucket = "B only (keyword evidence)"
+            else:
+                criterion_bucket = "No A/B keyword evidence"
+            candidate["criterion_bucket"] = criterion_bucket
+            candidates_by_criteria[criterion_bucket][identity] = candidate
+
+        def candidate_sort_key(
+            item: tuple[str, dict[str, Any]],
+        ) -> tuple[Any, ...]:
+            identity, candidate = item
+            record = candidate["record"]
+            return (
+                -(
+                    10 * len(candidate["query_keyword_matches"])
+                    + 3 * len(candidate["focus_matches"])
+                    + 2 * bool(candidate["llm_matches"])
+                    + 2 * bool(candidate["offensive_matches"])
+                ),
+                str(record.get("title_normalized") or record.get("title") or "").casefold(),
+                identity,
+            )
+
+        for candidates in candidates_by_criteria.values():
+            ordered = sorted(candidates.items(), key=candidate_sort_key)
+            candidates.clear()
+            candidates.update(ordered)
+
+        candidate_counts_by_query[query] = {
+            name: len(candidates)
+            for name, candidates in candidates_by_criteria.items()
+        }
+        selected = [
+            {"identity": identity, **candidate}
+            for identity, candidate in list(
+                candidates_by_criteria["Both A and B (keyword evidence)"].items()
+            )[:max_research_per_query]
+        ]
+        remaining = max_research_per_query - len(selected)
+        single_criterion_candidates = {
+            name: list(candidates_by_criteria[name].items())
+            for name in (
+                "A only (keyword evidence)",
+                "B only (keyword evidence)",
+            )
+        }
+        while remaining > 0 and any(single_criterion_candidates.values()):
+            for name in (
+                "A only (keyword evidence)",
+                "B only (keyword evidence)",
+            ):
+                if remaining == 0:
+                    break
+                candidates = single_criterion_candidates[name]
+                if candidates:
+                    identity, candidate = candidates.pop(0)
+                    selected.append({"identity": identity, **candidate})
+                    remaining -= 1
+        for identity, candidate in list(
+            candidates_by_criteria["No A/B keyword evidence"].items()
+        )[:remaining]:
+            selected.append({"identity": identity, **candidate})
+        for candidate in selected:
+            candidate["relevance_score"] = (
+                10 * len(candidate["query_keyword_matches"])
+                + 3 * len(candidate["focus_matches"])
+                + 2 * bool(candidate["llm_matches"])
+                + 2 * bool(candidate["offensive_matches"])
+            )
+        selected_by_query[query] = selected
+
+    summary_headers = [
+        "Query",
+        "Natural-language criterion",
+        "Question component",
+        "Focus dimension",
+        "Query LLM/agent terms",
+        "Query offensive-security terms",
+        "Query focus terms",
+        "Rule LLM/agent filter terms",
+        "Rule offensive-security filter terms",
+        "Rule research-focus filter terms",
+        *[f"Returned by: {source}" for source in sources],
+        "Total source records (may contain cross-source duplicates)",
+        "Unique research in query (DOI/title dedup across sources)",
+        "Unique research matching A or B",
+        "Matching both A and B by keywords",
+        "Matching A only by keywords",
+        "Matching B only by keywords",
+        "No A/B keyword evidence",
+        "Research selected for detail report",
+        "Search errors",
+        "Result-set fingerprints by source",
+    ]
+    summary_rows = []
+    for query in queries:
+        group = keyword_groups.get(query, {})
+        query_results = results_by_query[query]
+        unique_research: set[str] = set()
+        for result in query_results:
+            record = result.get("record", {})
+            identity = research_identity(record)
+            if identity.strip("|"):
+                unique_research.add(identity)
+
+        source_counts: list[int] = []
+        source_errors: list[str] = []
+        fingerprints: list[str] = []
+        for source in sources:
+            snapshot = snapshot_by_key.get((source, query), {})
+            source_counts.append(int(snapshot.get("result_count", 0)))
+            if snapshot.get("error"):
+                source_errors.append(f"{source}: {snapshot['error']}")
+            fingerprints.append(
+                f"{source}: {snapshot.get('result_set_sha256', '')}"
+            )
+        summary_rows.append([
+            query,
+            group.get("criterion", ""),
+            group.get("question_component", ""),
+            group.get("focus_dimension", ""),
+            "; ".join(group.get("llm_agent", [])),
+            "; ".join(group.get("offensive_security", [])),
+            "; ".join(group.get("focus_terms", [])),
+            "; ".join(rule_config.get("llm_terms", [])),
+            "; ".join(rule_config.get("offensive_terms", [])),
+            "; ".join(
+                keyword
+                for dimension in protocol.get("focus_dimensions", {}).values()
+                for keyword in dimension.get("keywords", [])
+            ),
+            *source_counts,
+            sum(source_counts),
+            len(unique_research),
+            sum(
+                candidate_counts_by_query[query][name]
+                for name in (
+                    "Both A and B (keyword evidence)",
+                    "A only (keyword evidence)",
+                    "B only (keyword evidence)",
+                )
+            ),
+            candidate_counts_by_query[query]["Both A and B (keyword evidence)"],
+            candidate_counts_by_query[query]["A only (keyword evidence)"],
+            candidate_counts_by_query[query]["B only (keyword evidence)"],
+            candidate_counts_by_query[query]["No A/B keyword evidence"],
+            len(selected_by_query[query]),
+            "; ".join(source_errors),
+            "\n".join(fingerprints),
+        ])
+
+    summary_path = output_dir / "search_query_summary.xlsx"
+    summary_book = Workbook()
+    summary_sheet = summary_book.active
+    summary_sheet.title = "Query summary"
+    summary_sheet.append([f"Search run: {run_id}"])
+    summary_sheet.append([
+        (
+            "The detail list is selected from each query's returned records by "
+            "query-keyword relevance. A/B labels describe title/abstract keyword "
+            "evidence only; they do not exclude records from this report."
+        )
+    ])
+    summary_sheet.append(summary_headers)
+    for row in summary_rows:
+        summary_sheet.append(row)
+    for cell in summary_sheet[3]:
+        cell.font = _HEADER_FONT
+        cell.fill = _HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = _THIN_BORDER
+    for row in summary_sheet.iter_rows(min_row=4):
+        for cell in row:
+            cell.border = _THIN_BORDER
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+    summary_widths = [58, 32, 58, 30, 34, 38, 38, 55, 65, 70]
+    summary_widths.extend([18] * len(sources))
+    summary_widths.extend([22, 22, 22, 22, 22, 22, 22, 22, 50, 58])
+    for column, width in enumerate(summary_widths, 1):
+        summary_sheet.column_dimensions[get_column_letter(column)].width = width
+    summary_sheet.freeze_panes = "A4"
+    summary_sheet.auto_filter.ref = (
+        f"A3:{get_column_letter(len(summary_headers))}{max(3, len(summary_rows) + 3)}"
+    )
+    summary_sheet.row_dimensions[2].height = 32
+    summary_sheet.row_dimensions[3].height = 42
+    summary_book.save(summary_path)
+
+    records_path = output_dir / "search_query_research.xlsx"
+    records_book = Workbook()
+    records_sheet = records_book.active
+    records_sheet.title = "Research by query"
+    record_headers = [
+        "Query",
+        "Natural-language criterion",
+        "Question component",
+        "Focus dimension",
+        "Query LLM/agent terms",
+        "Query offensive-security terms",
+        "Query focus terms",
+        "Matched A/B keyword evidence (report-only)",
+        "Sources",
+        "Matched focus keywords",
+        "Matched query-focus keywords",
+        "Matched query keywords",
+        "Matched LLM terms",
+        "Matched offensive-security terms",
+        "Selection relevance score",
+        "Paper ID",
+        "Title",
+        "Year",
+        "Authors",
+        "DOI",
+        "URL",
+        "Abstract",
+        "Cache used",
+        "Run ID",
+    ]
+    records_sheet.append(record_headers)
+    for cell in records_sheet[1]:
+        cell.font = _HEADER_FONT
+        cell.fill = _HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = _THIN_BORDER
+
+    for query in queries:
+        group = keyword_groups.get(query, {})
+        for selected in selected_by_query[query]:
+            record = selected["record"]
+            records_sheet.append([
+                query,
+                group.get("criterion", ""),
+                group.get("question_component", ""),
+                group.get("focus_dimension", ""),
+                "; ".join(group.get("llm_agent", [])),
+                "; ".join(group.get("offensive_security", [])),
+                "; ".join(group.get("focus_terms", [])),
+                selected["criterion_bucket"],
+                "; ".join(sorted(selected["sources"])),
+                "; ".join(sorted(selected["focus_matches"])),
+                "; ".join(sorted(selected["query_focus_matches"])),
+                "; ".join(sorted(selected["query_keyword_matches"])),
+                "; ".join(sorted(selected["llm_matches"])),
+                "; ".join(sorted(selected["offensive_matches"])),
+                selected["relevance_score"],
+                record.get("id", ""),
+                record.get("title", ""),
+                record.get("year"),
+                "; ".join(record.get("authors", [])),
+                record.get("doi", ""),
+                record.get("url", ""),
+                record.get("abstract", ""),
+                "; ".join(sorted(selected["cache_used"])),
+                run_id,
+            ])
+    for row in records_sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.border = _THIN_BORDER
+            cell.alignment = Alignment(
+                vertical="top",
+                wrap_text=cell.column in {1, 2, 3, 4, 5, 8, 9, 11, 12, 15},
+            )
+        url_cell = row[20]
+        if url_cell.value:
+            url_cell.hyperlink = str(url_cell.value)
+            url_cell.font = Font(color="0563C1", underline="single")
+    record_widths = [
+        58, 32, 58, 30, 34, 38, 38, 30, 36, 38, 38, 38, 34, 38, 18, 38, 55, 10, 38, 28, 48, 72, 14, 34
+    ]
+    for column, width in enumerate(record_widths, 1):
+        records_sheet.column_dimensions[get_column_letter(column)].width = width
+    records_sheet.freeze_panes = "A2"
+    records_sheet.auto_filter.ref = (
+        f"A1:{get_column_letter(len(record_headers))}{max(1, records_sheet.max_row)}"
+    )
+    for dimension_name in protocol.get("focus_dimensions", {}):
+        dimension_sheet = records_book.create_sheet(dimension_name[:31])
+        for column, header in enumerate(record_headers, 1):
+            cell = dimension_sheet.cell(1, column, header)
+            cell.font = _HEADER_FONT
+            cell.fill = _HEADER_FILL
+            cell.alignment = Alignment(
+                horizontal="center", vertical="center", wrap_text=True
+            )
+            cell.border = _THIN_BORDER
+        target_row = 2
+        for source_row in records_sheet.iter_rows(min_row=2, values_only=True):
+            if source_row[3] != dimension_name:
+                continue
+            for column, value in enumerate(source_row, 1):
+                cell = dimension_sheet.cell(target_row, column, value)
+                cell.border = _THIN_BORDER
+                cell.alignment = Alignment(
+                    vertical="top",
+                    wrap_text=column in {
+                        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 15, 18
+                    },
+                )
+            url_cell = dimension_sheet.cell(target_row, 21)
+            if url_cell.value:
+                url_cell.hyperlink = str(url_cell.value)
+                url_cell.font = Font(color="0563C1", underline="single")
+            target_row += 1
+        for column, width in enumerate(record_widths, 1):
+            dimension_sheet.column_dimensions[get_column_letter(column)].width = width
+        dimension_sheet.freeze_panes = "A2"
+        dimension_sheet.auto_filter.ref = (
+            f"A1:{get_column_letter(len(record_headers))}{max(1, dimension_sheet.max_row)}"
+        )
+    records_book.save(records_path)
+    return summary_path, records_path
